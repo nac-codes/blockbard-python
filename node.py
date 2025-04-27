@@ -174,6 +174,50 @@ class Node:
                 self.logger.error(f"Error triggering mining: {e}", exc_info=True)
                 return jsonify({"error": "Failed to trigger mining"}), 500
 
+        @app.route('/discover', methods=['POST'])
+        def discover():
+            """Direct peer-to-peer discovery endpoint."""
+            self.logger.debug(f"Received discovery request: {request.data}")
+            
+            try:
+                # Get the address of the node making the discovery request
+                data = request.get_json()
+                peer_address = data.get('address')
+                
+                if not peer_address:
+                    return jsonify({"error": "Peer address required"}), 400
+                
+                # Add the requestor to our peer list if it's not already there and not ourselves
+                if peer_address != self.address:
+                    with self.lock:
+                        old_peers = set(self.peers)
+                        self.peers.add(peer_address)
+                        if peer_address not in old_peers:
+                            self.logger.info(f"Added new peer via direct discovery: {peer_address}")
+                            
+                    # If this is a new peer and we have a chain, broadcast our latest block
+                    if peer_address not in old_peers and len(self.blockchain.chain) > 1:
+                        latest_block = self.blockchain.get_latest_block()
+                        threading.Thread(
+                            target=self.broadcast_block_to_specific_peers,
+                            args=(latest_block, [peer_address]),
+                            daemon=True
+                        ).start()
+                
+                # Return our peer list (excluding the requestor)
+                with self.lock:
+                    response_peers = [p for p in self.peers if p != peer_address]
+                    
+                return jsonify({
+                    "message": "Discovery successful",
+                    "peers": response_peers,
+                    "chain_length": len(self.blockchain.chain)
+                }), 200
+                
+            except Exception as e:
+                self.logger.error(f"Error handling discovery request: {e}", exc_info=True)
+                return jsonify({"error": "Failed to process discovery"}), 500
+
         return app
 
     def register_with_tracker(self):
@@ -264,12 +308,21 @@ class Node:
                 # Save blockchain state after mining
                 self._save_blockchain_state(f"mined_{new_block.index}")
                 
-                # Get latest peer list from tracker to ensure we're up-to-date
+                # Get latest peer list from tracker and try direct discovery
                 self._refresh_peer_list()
+                self.discover_from_all_peers()
                 
                 # Broadcast after adding locally and refreshing peers
                 # Run broadcast in a separate thread to avoid blocking if mining is part of a loop
                 threading.Thread(target=self.broadcast_block, args=(new_block,), daemon=True).start()
+                
+                # Wait a moment and then trigger another round of discovery
+                def delayed_discovery():
+                    time.sleep(1)
+                    self.logger.info("Running delayed discovery after mining")
+                    self.discover_from_all_peers()
+                
+                threading.Thread(target=delayed_discovery, daemon=True).start()
             else:
                 self.logger.warning(f"Mined block {new_block.index} but failed to add locally (validation failed?)")
         except Exception as e:
@@ -402,6 +455,67 @@ class Node:
         self._save_blockchain_state("after_sync")
         return result
 
+    def discover_peers(self, target_peer):
+        """Directly contact a known peer to discover other peers."""
+        try:
+            self.logger.info(f"Attempting direct discovery with peer: {target_peer}")
+            
+            # Send discovery request to the target peer
+            response = requests.post(
+                f"{target_peer}/discover",
+                json={"address": self.address},
+                timeout=2
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                new_peers = data.get('peers', [])
+                remote_chain_length = data.get('chain_length', 0)
+                
+                self.logger.info(f"Discovery successful. Received {len(new_peers)} peers from {target_peer}. Remote chain length: {remote_chain_length}")
+                
+                # Add new peers
+                with self.lock:
+                    old_peers = set(self.peers)
+                    for peer in new_peers:
+                        if peer != self.address:
+                            self.peers.add(peer)
+                            
+                    added_peers = self.peers - old_peers
+                    if added_peers:
+                        self.logger.info(f"Added peers via discovery: {added_peers}")
+                
+                # If remote node has a longer chain, sync with it
+                if remote_chain_length > len(self.blockchain.chain):
+                    self.logger.info(f"Remote peer has longer chain ({remote_chain_length} > {len(self.blockchain.chain)}). Syncing...")
+                    threading.Thread(target=self.sync_chain, daemon=True).start()
+                    
+                return True
+            else:
+                self.logger.warning(f"Discovery request failed: {response.status_code}")
+                return False
+        except Exception as e:
+            self.logger.error(f"Error during peer discovery with {target_peer}: {e}")
+            return False
+
+    def discover_from_all_peers(self):
+        """Try to discover peers from all known peers."""
+        with self.lock:
+            current_peers = list(self.peers)
+            
+        if not current_peers:
+            self.logger.info("No peers to discover from. Trying to refresh from tracker.")
+            # If we have no peers, refresh from tracker
+            self._refresh_peer_list()
+            return False
+            
+        success = False
+        for peer in current_peers:
+            if self.discover_peers(peer):
+                success = True
+                
+        return success
+
     def run(self):
         """Starts the node's Flask server and registers with the tracker."""
         try:
@@ -412,7 +526,29 @@ class Node:
             # In a real system, syncing might be triggered differently or periodically
             self.logger.info("Waiting briefly before initial sync...")
             time.sleep(2) # Give tracker/peers time to settle
-            self.sync_chain()
+            
+            # Start discovery and sync in background thread
+            def discovery_and_sync_loop():
+                max_attempts = 3
+                for attempt in range(max_attempts):
+                    self.logger.info(f"Running discovery and sync (attempt {attempt+1}/{max_attempts})")
+                    
+                    # First, try to sync with existing peers
+                    self.sync_chain()
+                    
+                    # Then, try to discover more peers directly
+                    if self.discover_from_all_peers():
+                        # If we found new peers, try syncing again
+                        self.sync_chain()
+                    
+                    # Sleep between attempts
+                    if attempt < max_attempts - 1:
+                        time.sleep(2)
+                
+                self.logger.info(f"Initial discovery and sync complete. Peer count: {len(self.peers)}, Chain length: {len(self.blockchain.chain)}")
+            
+            # Start discovery in background
+            threading.Thread(target=discovery_and_sync_loop, daemon=True).start()
 
             self.logger.info(f"Starting Flask server at {self.address}")
             # Run Flask app. Use threaded=True for concurrent request handling.

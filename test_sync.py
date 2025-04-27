@@ -236,17 +236,20 @@ if __name__ == "__main__":
             
         # 2. Start Node 1 and Node 2
         node1_proc = run_node(NODE_PORTS[0]) # Start node on 5501
+        logger.info("Waiting for Node 1 to start up...")
+        time.sleep(2) # Give Node 1 time to start
+        
         node2_proc = run_node(NODE_PORTS[1]) # Start node on 5502
-
+        
         logger.info("\nWaiting for nodes 1 and 2 to register and perform initial sync...")
-        time.sleep(5) # Allow time for registration and potential first sync
+        time.sleep(10) # Allow more time for registration, discovery and initial sync
 
         # Check if nodes are running
         for i, url in enumerate(NODE_URLS[:2]):
             try:
                 response = requests.get(f"{url}/get_chain", timeout=1)
                 if response.status_code == 200:
-                    logger.info(f"Node {i+1} ({url}) is running.")
+                    logger.info(f"Node {i+1} ({url}) is running. Chain length: {len(json.loads(response.text))}")
                 else:
                     logger.warning(f"Node {i+1} ({url}) returned status {response.status_code}")
             except requests.exceptions.RequestException as e:
@@ -254,18 +257,18 @@ if __name__ == "__main__":
 
         # 3. Node 1 mines two blocks
         mined1 = trigger_node_mining(NODE_URLS[0], "Block 1 data from Node 1")
-        time.sleep(2) # Give time for mining and broadcast
+        time.sleep(5) # Give more time for mining and broadcast
         mined2 = trigger_node_mining(NODE_URLS[0], "Block 2 data from Node 1")
 
         logger.info("\nWaiting for blocks to propagate and Node 2 to sync...")
-        time.sleep(8) # Allow ample time for broadcast, validation, and potential conflict resolution
+        time.sleep(15) # Allow more time for broadcast, validation, and potential conflict resolution
 
         # 4. Start Node 3 (Late Joiner)
         logger.info("\nStarting Node 3 (late joiner)...")
         node3_proc = run_node(NODE_PORTS[2]) # Start node on 5503
 
         logger.info("\nWaiting for Node 3 to register and sync...")
-        time.sleep(8) # Allow time for registration and sync via resolve_conflicts
+        time.sleep(15) # Allow more time for registration and sync via resolve_conflicts
 
         # 5. Verify Chains
         logger.info("\n--- Verifying Final Blockchain States ---")

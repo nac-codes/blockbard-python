@@ -16,12 +16,13 @@ def run_tracker(host, port):
     from tracker import app
     app.run(host=host, port=port, threaded=True, debug=False)
 
-def run_node(host, port, tracker_url):
+def run_node(host, port, tracker_url, auto_mine=False, mine_interval=10):
     """Run a blockchain node."""
     print(f"Starting blockchain node on {host}:{port} connected to tracker {tracker_url}")
+    print(f"Auto-mining: {'Enabled' if auto_mine else 'Disabled'}, interval: {mine_interval}s")
     # Import here to avoid circular imports
     from node import Node
-    node = Node(host=host, port=port, tracker_url=tracker_url)
+    node = Node(host=host, port=port, tracker_url=tracker_url, auto_mine=auto_mine, mine_interval=mine_interval)
     node.run()
 
 def main():
@@ -38,6 +39,8 @@ def main():
     node_parser.add_argument("--host", default="localhost", help="Host address to bind to (default: localhost)")
     node_parser.add_argument("--port", type=int, default=5501, help="Port to bind to (default: 5501)")
     node_parser.add_argument("--tracker", required=True, help="Tracker URL (e.g., http://localhost:5500)")
+    node_parser.add_argument("--auto-mine", action="store_true", help="Enable automatic mining")
+    node_parser.add_argument("--mine-interval", type=int, default=10, help="Auto-mining interval in seconds (default: 10)")
     
     # Parse arguments
     args = parser.parse_args()
@@ -49,7 +52,7 @@ def main():
     if args.mode == "tracker":
         run_tracker(args.host, args.port)
     elif args.mode == "node":
-        run_node(args.host, args.port, args.tracker)
+        run_node(args.host, args.port, args.tracker, args.auto_mine, args.mine_interval)
     else:
         parser.print_help()
         sys.exit(1)

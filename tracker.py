@@ -170,4 +170,4 @@ if __name__ == '__main__':
     # Use threaded=True for handling multiple requests concurrently
     # Use debug=False for production/testing stability
     # Use host='0.0.0.0' to be accessible externally if needed, localhost for local testing
-    app.run(host='localhost', port=tracker_port, threaded=True) 
+    app.run(host='0.0.0.0', port=tracker_port, threaded=True) 

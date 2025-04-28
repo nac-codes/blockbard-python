@@ -36,9 +36,9 @@ class Block:
 class Blockchain:
     def __init__(self, genesis_data=None):
         # Initialize difficulty first before using it
-        self.difficulty = 2  # Number of leading zeros required for a valid hash
+        self.difficulty = 4  # Increased from 2 to 4 (more leading zeros required)
         self.mining_reward = 1.0  # Optional: reward for mining a block
-        self.block_generation_interval = 10  # Target time between blocks in seconds
+        self.block_generation_interval = 60  # Changed from 10 to 60 seconds (1 minute target)
         self.difficulty_adjustment_interval = 10  # Adjust difficulty after this many blocks
         self.max_nonce = 2**32  # Maximum nonce value to try
         self.last_difficulty_adjustment = datetime.datetime.now()

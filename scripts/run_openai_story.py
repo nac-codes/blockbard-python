@@ -137,7 +137,8 @@ class OpenAICollaborativeStorySystem:
             self.process_outputs.append((node_process, f"NODE-{i+1}"))
             
             # Give each node time to start
-            time.sleep(2)
+            print(f"Giving node {i+1} time to start...")
+            time.sleep(5)
             
         print(f"All {self.num_storytellers} blockchain nodes started.")
     
@@ -177,7 +178,8 @@ class OpenAICollaborativeStorySystem:
             self.process_outputs.append((ai_process, f"AI-{i+1}"))
             
             # Give each AI time to start
-            time.sleep(1)
+            print(f"Giving AI {i+1} time to start...")
+            time.sleep(30)
             
         print(f"All {self.num_storytellers} OpenAI storytellers started.")
     
@@ -462,8 +464,8 @@ def main():
     
     parser = argparse.ArgumentParser(description="Run the BlockBard OpenAI collaborative storytelling system")
     parser.add_argument("--storytellers", type=int, default=3, help="Number of storytellers (default: 3)")
-    parser.add_argument("--interval", type=int, default=5, help="Mining interval in seconds (default: 5)")
-    parser.add_argument("--duration", type=int, default=300, help="Duration in seconds (default: 300)")
+    parser.add_argument("--interval", type=int, default=45, help="Mining interval in seconds (default: 45)")
+    parser.add_argument("--duration", type=int, default=600, help="Duration in seconds (default: 600)")
     parser.add_argument("--genesis", help="Custom genesis story to start with")
     
     args = parser.parse_args()

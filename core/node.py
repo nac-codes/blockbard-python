@@ -233,11 +233,31 @@ class Node:
                     self.logger.warning("Add transaction failed: Missing 'data' field")
                     return jsonify({"error": "Missing 'data' field in request body"}), 400
 
+                # Require previous_hash in transaction
+                if 'previous_hash' not in data:
+                    self.logger.warning("Add transaction failed: Missing 'previous_hash' field")
+                    return jsonify({"error": "Missing 'previous_hash' field in request body"}), 400
+
                 transaction_data = data['data']
+                previous_hash = data['previous_hash']
                 
-                # Add to transaction pool
-                self.transaction_pool.append(transaction_data)
-                self.logger.info(f"Added transaction to pool: {transaction_data}")
+                # Verify the previous hash matches our latest block
+                with self.lock:
+                    latest_block = self.blockchain.get_latest_block()
+                    latest_hash = latest_block.hash
+                    
+                    # If the previous hash doesn't match, reject the transaction
+                    if previous_hash != latest_hash:
+                        self.logger.warning(f"Transaction rejected: Previous hash mismatch. Expected {latest_hash}, got {previous_hash}")
+                        return jsonify({
+                            "error": "Previous hash mismatch. Your chain may be out of date.",
+                            "expected_hash": latest_hash,
+                            "latest_block_index": latest_block.index
+                        }), 409  # Conflict
+
+                    # Add to transaction pool
+                    self.transaction_pool.append(transaction_data)
+                    self.logger.info(f"Added transaction to pool: {transaction_data}")
                 
                 # If auto-mining is enabled and we're not already mining, consider starting mining
                 if self.auto_mine and not self.is_mining and not self.stop_auto_mining:
@@ -371,10 +391,18 @@ class Node:
             # Log full details of the request we're about to make
             self.logger.debug(f"Sending registration request to: {register_url}")
             self.logger.debug(f"Request data: {{'address': '{self.address}'}}")
-            self.logger.debug(f"Full tracker URL: {self.tracker_url}")
             
-            # Make the request
-            response = requests.post(register_url, json={'address': self.address}, timeout=5)
+            # Use our robust request method for more reliable registration
+            response = self._make_robust_request('post', 
+                                               register_url, 
+                                               json={'address': self.address}, 
+                                               max_retries=3,
+                                               base_timeout=5)
+            
+            if not response:
+                self.logger.error(f"Failed to connect to tracker at {self.tracker_url} after multiple attempts")
+                return
+                
             self.logger.debug(f"Registration response status: {response.status_code}")
             
             if response.status_code == 200:
@@ -393,12 +421,13 @@ class Node:
                 self.logger.debug(f"Response headers: {response.headers}")
                 # Try a GET request to see if tracker is functioning at all
                 try:
-                    test_response = requests.get(self.tracker_url, timeout=1)
-                    self.logger.debug(f"Test GET to tracker root: Status {test_response.status_code}")
+                    test_response = self._make_robust_request('get', self.tracker_url, max_retries=1)
+                    if test_response:
+                        self.logger.debug(f"Test GET to tracker root: Status {test_response.status_code}")
+                    else:
+                        self.logger.error("Could not reach tracker at all with test request")
                 except Exception as test_e:
-                    self.logger.error(f"Could not reach tracker at all: {test_e}")
-        except requests.exceptions.RequestException as e:
-            self.logger.error(f"Could not connect to tracker at {self.tracker_url}: {e}")
+                    self.logger.error(f"Error testing tracker connection: {test_e}")
         except Exception as e:
             self.logger.error(f"Unexpected error during registration: {e}", exc_info=True)
 
@@ -420,14 +449,28 @@ class Node:
 
         self.logger.info(f"Broadcasting block {block.index} with hash {block.hash[:8]} to {len(target_peers)} specific peers")
         
+        success_count = 0
+        
         for peer in target_peers:
             try:
                 broadcast_url = f"{peer}/add_block"
                 self.logger.debug(f"Sending block to {peer}")
-                response = requests.post(broadcast_url, json=block_data, timeout=3)
-                self.logger.debug(f"Response from {peer}: {response.status_code}")
-            except requests.exceptions.RequestException as e:
-                self.logger.warning(f"Failed to broadcast block to {peer}: {e}")
+                
+                # Use our robust request method for more reliable broadcasting
+                response = self._make_robust_request('post', broadcast_url, 
+                                                    json=block_data, 
+                                                    max_retries=2)
+                
+                if response:
+                    self.logger.debug(f"Response from {peer}: {response.status_code}")
+                    if response.status_code in (200, 201):
+                        success_count += 1
+                else:
+                    self.logger.warning(f"Failed to broadcast block to {peer} after retries")
+            except Exception as e:
+                self.logger.warning(f"Unexpected error broadcasting block to {peer}: {e}")
+        
+        self.logger.info(f"Block {block.index} broadcast completed: {success_count}/{len(target_peers)} peers successful")
 
     def broadcast_block(self, new_block):
         """Sends a newly mined block to all known peers."""
@@ -639,7 +682,16 @@ class Node:
         for node in peers:
             try:
                 self.logger.debug(f"Requesting chain from {node}")
-                response = requests.get(f'{node}/get_chain', timeout=5)  # Increased timeout
+                
+                # Use our robust request method with longer timeout for chain fetching
+                response = self._make_robust_request('get', f'{node}/get_chain', 
+                                                    max_retries=3, 
+                                                    base_timeout=10)
+                
+                if not response:
+                    self.logger.warning(f"Failed to fetch chain from {node} after retries")
+                    continue
+                    
                 if response.status_code == 200:
                     chain_json = response.text # Get raw JSON string
                     chain_data = json.loads(chain_json)
@@ -667,8 +719,8 @@ class Node:
                             self.logger.warning(f"Chain from {node} (length {length}) is invalid")
                     else:
                         self.logger.debug(f"Chain from {node} (length {length}) not longer than current chain ({current_chain_length})")
-            except requests.exceptions.RequestException as e:
-                self.logger.warning(f"Could not fetch chain from peer {node}: {e}")
+                else:
+                    self.logger.warning(f"Unexpected status code fetching chain from {node}: {response.status_code}")
             except json.JSONDecodeError as e:
                 self.logger.error(f"Failed to decode chain JSON from {node}: {e}")
             except Exception as e:
@@ -754,13 +806,16 @@ class Node:
         try:
             self.logger.info(f"Attempting direct discovery with peer: {target_peer}")
             
-            # Send discovery request to the target peer
-            response = requests.post(
-                f"{target_peer}/discover",
-                json={"address": self.address},
-                timeout=2
-            )
+            # Send discovery request to the target peer using robust request
+            response = self._make_robust_request('post', 
+                                               f"{target_peer}/discover",
+                                               json={"address": self.address},
+                                               max_retries=2)
             
+            if not response:
+                self.logger.warning(f"Failed to send discovery request to {target_peer} after retries")
+                return False
+                
             if response.status_code == 200:
                 data = response.json()
                 new_peers = data.get('peers', [])
@@ -852,10 +907,23 @@ class Node:
             # Start discovery in background
             threading.Thread(target=discovery_and_sync_loop, daemon=True).start()
 
-            self.logger.info(f"Starting Flask server at {self.address}")
-            # Run Flask app. Use threaded=True for concurrent request handling.
-            # Use debug=False and use_reloader=False for stability when running multiple processes.
-            self.app.run(host=self.host, port=self.port, threaded=True, debug=False, use_reloader=False)
+            self.logger.info(f"Starting server at {self.address}")
+            
+            # Instead of Flask's built-in server, use Waitress for better concurrency
+            # Import here to avoid affecting module-level dependencies
+            try:
+                from waitress import serve
+                # Use 8 threads by default - adjust based on system capabilities
+                num_threads = 8
+                self.logger.info(f"Using Waitress server with {num_threads} threads")
+                serve(self.app, host=self.host, port=self.port, threads=num_threads, 
+                      ident=f"BlockBard_Node_{self.port}", url_scheme='http')
+            except ImportError:
+                # Fallback to Flask's built-in server if Waitress isn't available
+                self.logger.warning("Waitress not available. Using Flask's built-in server instead.")
+                self.logger.warning("This may lead to poor concurrency during mining. Install waitress for better performance.")
+                self.app.run(host=self.host, port=self.port, threaded=True, debug=False, use_reloader=False)
+                
         except Exception as e:
             self.logger.error(f"Error running node: {e}", exc_info=True)
             raise
@@ -889,6 +957,74 @@ class Node:
         """Generate a dummy transaction for testing auto-mining."""
         transaction = f"TX-{time.time()}: Transfer from User{random.randint(1, 100)} to User{random.randint(1, 100)}"
         return transaction
+
+    def _make_robust_request(self, method, url, **kwargs):
+        """
+        Makes a network request with robust retry logic and exponential backoff.
+        
+        Args:
+            method: 'get' or 'post'
+            url: The URL to request
+            **kwargs: Additional arguments to pass to requests
+            
+        Returns:
+            The response object if successful, None otherwise
+        """
+        max_retries = kwargs.pop('max_retries', 3)
+        backoff_factor = kwargs.pop('backoff_factor', 1.5) 
+        base_timeout = kwargs.pop('base_timeout', 5)
+        
+        retry_count = 0
+        request_func = getattr(requests, method.lower())
+        
+        while retry_count < max_retries:
+            try:
+                # Increase timeout slightly with each retry
+                if 'timeout' not in kwargs:
+                    kwargs['timeout'] = base_timeout + (retry_count * 2)
+                
+                self.logger.debug(f"Making {method.upper()} request to {url} (timeout: {kwargs.get('timeout')}s)")
+                response = request_func(url, **kwargs)
+                
+                # Log the response status
+                self.logger.debug(f"Response status: {response.status_code}")
+                
+                # Return the response regardless of status code
+                # The caller should handle non-200 responses
+                return response
+                
+            except requests.exceptions.Timeout:
+                retry_count += 1
+                if retry_count >= max_retries:
+                    self.logger.error(f"Timeout error after {max_retries} attempts: {url}")
+                    return None
+                
+                wait_time = backoff_factor ** retry_count
+                self.logger.warning(f"Request timeout. Retrying in {wait_time:.2f}s (attempt {retry_count+1}/{max_retries}): {url}")
+                time.sleep(wait_time)
+                
+            except requests.exceptions.ConnectionError:
+                retry_count += 1
+                if retry_count >= max_retries:
+                    self.logger.error(f"Connection error after {max_retries} attempts: {url}")
+                    return None
+                
+                wait_time = backoff_factor ** retry_count
+                self.logger.warning(f"Connection error. Retrying in {wait_time:.2f}s (attempt {retry_count+1}/{max_retries}): {url}")
+                time.sleep(wait_time)
+                
+            except Exception as e:
+                self.logger.error(f"Error making request to {url}: {str(e)}")
+                retry_count += 1
+                if retry_count >= max_retries:
+                    self.logger.error(f"Failed after {max_retries} attempts due to errors")
+                    return None
+                    
+                wait_time = backoff_factor ** retry_count
+                self.logger.warning(f"Request error. Retrying in {wait_time:.2f}s (attempt {retry_count+1}/{max_retries}): {url}")
+                time.sleep(wait_time)
+                
+        return None
 
 # Example usage (typically run from a main script)
 if __name__ == '__main__':

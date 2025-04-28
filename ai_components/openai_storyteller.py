@@ -84,22 +84,82 @@ class OpenAIStoryteller:
         file_handler.setFormatter(file_format)
         self.logger.addHandler(file_handler)
     
-    def _get_current_story(self):
-        """Get the current state of the story from the blockchain."""
+    def _get_current_story(self, max_retries=5, backoff_factor=1.5):
+        """
+        Get the current state of the story from the blockchain with robust error handling.
+        Uses exponential backoff for retries to handle temporary network issues or node busy states.
+        """
         self.logger.debug(f"Fetching current story from {self.node_url}/get_chain")
-        try:
-            response = requests.get(f"{self.node_url}/get_chain", timeout=5)
-            if response.status_code == 200:
-                blockchain = response.json()
-                self.logger.debug(f"Successfully fetched blockchain with {len(blockchain)} blocks")
-                return blockchain
-            else:
-                self.logger.warning(f"Failed to get story state: {response.status_code}")
-                self.logger.debug(f"Response: {response.text}")
-                return None
-        except Exception as e:
-            self.logger.error(f"Error getting story state: {str(e)}", exc_info=True)
-            return None
+        
+        base_timeout = 5  # Base timeout in seconds
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                # Increase timeout slightly with each retry
+                current_timeout = base_timeout + (retry_count * 2)
+                
+                # Make the request with the current timeout
+                response = requests.get(f"{self.node_url}/get_chain", timeout=current_timeout)
+                
+                if response.status_code == 200:
+                    blockchain = response.json()
+                    self.logger.debug(f"Successfully fetched blockchain with {len(blockchain)} blocks")
+                    return blockchain
+                else:
+                    # Non-200 response - log and retry
+                    self.logger.warning(f"Failed to get story state: HTTP {response.status_code}")
+                    self.logger.debug(f"Response: {response.text}")
+                    
+                    # Increment retry counter
+                    retry_count += 1
+                    
+                    if retry_count >= max_retries:
+                        self.logger.error(f"Failed to get blockchain after {max_retries} attempts")
+                        return None
+                    
+                    # Calculate backoff time
+                    wait_time = backoff_factor ** retry_count
+                    self.logger.info(f"Retrying in {wait_time:.2f} seconds (attempt {retry_count+1}/{max_retries})")
+                    time.sleep(wait_time)
+            
+            except requests.exceptions.Timeout:
+                retry_count += 1
+                if retry_count >= max_retries:
+                    self.logger.error(f"Timeout error fetching blockchain after {max_retries} attempts")
+                    return None
+                
+                # Calculate backoff time for timeout
+                wait_time = backoff_factor ** retry_count
+                self.logger.warning(f"Timeout fetching blockchain. Retrying in {wait_time:.2f} seconds (attempt {retry_count+1}/{max_retries})")
+                time.sleep(wait_time)
+                
+            except requests.exceptions.ConnectionError:
+                retry_count += 1
+                if retry_count >= max_retries:
+                    self.logger.error(f"Connection error fetching blockchain after {max_retries} attempts")
+                    return None
+                
+                # Calculate backoff time for connection error
+                wait_time = backoff_factor ** retry_count
+                self.logger.warning(f"Connection error fetching blockchain. Retrying in {wait_time:.2f} seconds (attempt {retry_count+1}/{max_retries})")
+                time.sleep(wait_time)
+                
+            except Exception as e:
+                self.logger.error(f"Error getting story state: {str(e)}", exc_info=True)
+                
+                retry_count += 1
+                if retry_count >= max_retries:
+                    self.logger.error(f"Failed to get blockchain after {max_retries} attempts due to errors")
+                    return None
+                
+                # Calculate backoff time
+                wait_time = backoff_factor ** retry_count
+                self.logger.warning(f"Error fetching blockchain. Retrying in {wait_time:.2f} seconds (attempt {retry_count+1}/{max_retries})")
+                time.sleep(wait_time)
+        
+        # This should never be reached if max_retries > 0
+        return None
     
     def _prepare_context(self, blockchain):
         """Extract story text from blockchain and limit to max_context_words."""
@@ -137,7 +197,8 @@ class OpenAIStoryteller:
         return full_story
     
     def _generate_contribution(self, blockchain=None):
-        """Generate a Bible verse translation using OpenAI's GPT model."""
+        """Generate a Bible verse translation using OpenAI's GPT model.
+        Returns a tuple of (contribution_text, previous_hash) to ensure consistency."""
         self.logger.info("Generating new Bible verse translation")
         
         # Get the current blockchain if not provided
@@ -147,7 +208,12 @@ class OpenAIStoryteller:
         
         if not blockchain:
             self.logger.warning("No blockchain data available, using fallback Genesis 1:1")
-            return f"Author {self.author_id} says: In the beginning God created the heaven and the earth."
+            return (f"Author {self.author_id} says: In the beginning God created the heaven and the earth.", None)
+        
+        # Store the hash of the latest block - this is the previous hash for our new contribution
+        latest_block = blockchain[-1]
+        previous_hash = latest_block["hash"]
+        self.logger.debug(f"Generating contribution based on previous hash: {previous_hash}")
         
         # Prepare the story context
         self.logger.debug("Preparing context for OpenAI")
@@ -207,46 +273,125 @@ class OpenAIStoryteller:
             if next_verse not in contribution:
                 contribution = f"{next_verse} - {contribution}"
             
-            return contribution
+            return (contribution, previous_hash)
             
         except Exception as e:
             self.logger.error(f"Error generating contribution with OpenAI: {str(e)}", exc_info=True)
             # Fallback to a simple contribution
             fallback = f"Author {self.author_id} says: {next_verse} - And the earth was without form, and void; and darkness was upon the face of the deep."
             self.logger.info(f"Using fallback contribution: {fallback}")
-            return fallback
+            return (fallback, previous_hash)
     
-    def _submit_contribution(self, contribution):
-        """Submit a story contribution to the blockchain node."""
+    def _submit_contribution(self, contribution_data, max_retries=3, backoff_factor=1.5):
+        """
+        Submit a story contribution to the blockchain node with robust retry logic.
+        contribution_data is a tuple of (contribution_text, previous_hash)
+        """
+        # Unpack the contribution data
+        contribution, previous_hash = contribution_data
+        
         self.logger.info(f"Submitting contribution to node: {self.node_url}")
         self.logger.debug(f"Full contribution: {contribution}")
+        self.logger.debug(f"Using previous hash: {previous_hash}")
         
-        payload = {"data": contribution}
-        self.logger.debug(f"Payload: {json.dumps(payload)}")
-        
-        try:
-            self.logger.debug(f"Sending POST request to {self.node_url}/add_transaction")
-            start_time = time.time()
-            
-            response = requests.post(
-                f"{self.node_url}/add_transaction", 
-                json=payload,
-                timeout=5
-            )
-            
-            elapsed_time = time.time() - start_time
-            self.logger.info(f"Response received in {elapsed_time:.2f} seconds: {response.status_code}")
-            self.logger.debug(f"Response body: {response.text}")
-            
-            if response.status_code == 201:
-                self.logger.info(f"Contribution successfully submitted")
-                return True
-            else:
-                self.logger.warning(f"Failed to submit contribution: {response.status_code}")
-                return False
-        except Exception as e:
-            self.logger.error(f"Error submitting contribution: {str(e)}", exc_info=True)
+        # If we don't have a previous hash, we can't submit
+        if previous_hash is None:
+            self.logger.error("Cannot submit contribution: No previous hash available")
             return False
+        
+        # Include previous_hash in the payload
+        payload = {
+            "data": contribution,
+            "previous_hash": previous_hash
+        }
+        self.logger.debug(f"Payload with previous hash: {json.dumps(payload)}")
+        
+        # Initialize retry counters
+        retry_count = 0
+        base_timeout = 5  # Base timeout in seconds
+        
+        while retry_count < max_retries:
+            try:
+                # Increase timeout slightly with each retry
+                current_timeout = base_timeout + (retry_count * 2)
+                
+                self.logger.debug(f"Sending POST request to {self.node_url}/add_transaction (timeout: {current_timeout}s)")
+                start_time = time.time()
+                
+                response = requests.post(
+                    f"{self.node_url}/add_transaction", 
+                    json=payload,
+                    timeout=current_timeout
+                )
+                
+                elapsed_time = time.time() - start_time
+                self.logger.info(f"Response received in {elapsed_time:.2f} seconds: {response.status_code}")
+                self.logger.debug(f"Response body: {response.text}")
+                
+                if response.status_code == 201:
+                    self.logger.info(f"Contribution successfully submitted")
+                    return True
+                elif response.status_code == 409:  # Conflict - chain has changed
+                    # This is an expected error case - the blockchain has moved on
+                    # Don't retry in this case as we need to regenerate the contribution
+                    self.logger.warning("Contribution rejected due to chain state change")
+                    try:
+                        error_data = response.json()
+                        self.logger.info(f"Expected hash: {error_data.get('expected_hash')}, Latest block: {error_data.get('latest_block_index')}")
+                    except:
+                        pass
+                    return False
+                else:
+                    # Other HTTP errors - retry with backoff
+                    self.logger.warning(f"Failed to submit contribution: HTTP {response.status_code}")
+                    retry_count += 1
+                    
+                    if retry_count >= max_retries:
+                        self.logger.error(f"Failed to submit contribution after {max_retries} attempts")
+                        return False
+                    
+                    # Calculate backoff time
+                    wait_time = backoff_factor ** retry_count
+                    self.logger.info(f"Retrying submission in {wait_time:.2f} seconds (attempt {retry_count+1}/{max_retries})")
+                    time.sleep(wait_time)
+                    
+            except requests.exceptions.Timeout:
+                retry_count += 1
+                if retry_count >= max_retries:
+                    self.logger.error(f"Timeout error submitting contribution after {max_retries} attempts")
+                    return False
+                
+                # Calculate backoff time for timeout
+                wait_time = backoff_factor ** retry_count
+                self.logger.warning(f"Timeout submitting contribution. Retrying in {wait_time:.2f} seconds (attempt {retry_count+1}/{max_retries})")
+                time.sleep(wait_time)
+                
+            except requests.exceptions.ConnectionError:
+                retry_count += 1
+                if retry_count >= max_retries:
+                    self.logger.error(f"Connection error submitting contribution after {max_retries} attempts")
+                    return False
+                
+                # Calculate backoff time for connection error
+                wait_time = backoff_factor ** retry_count
+                self.logger.warning(f"Connection error submitting contribution. Retrying in {wait_time:.2f} seconds (attempt {retry_count+1}/{max_retries})")
+                time.sleep(wait_time)
+                
+            except Exception as e:
+                self.logger.error(f"Error submitting contribution: {str(e)}", exc_info=True)
+                
+                retry_count += 1
+                if retry_count >= max_retries:
+                    self.logger.error(f"Failed to submit contribution after {max_retries} attempts due to errors")
+                    return False
+                
+                # Calculate backoff time
+                wait_time = backoff_factor ** retry_count
+                self.logger.warning(f"Error submitting contribution. Retrying in {wait_time:.2f} seconds (attempt {retry_count+1}/{max_retries})")
+                time.sleep(wait_time)
+        
+        # This should never be reached if max_retries > 0
+        return False
     
     def _storytelling_loop(self):
         """Background thread that periodically generates and submits story contributions."""
@@ -254,22 +399,44 @@ class OpenAIStoryteller:
         
         while self.running:
             try:
-                # Get current blockchain state
+                # Get current blockchain state once at the beginning of the cycle
                 self.logger.debug("Fetching current blockchain state")
                 blockchain = self._get_current_story()
                 
-                if blockchain:
-                    self.logger.info(f"Current blockchain has {len(blockchain)} blocks")
+                if not blockchain:
+                    self.logger.warning("Could not retrieve blockchain state")
+                    time.sleep(5)  # Brief pause before retrying
+                    continue
+                
+                self.logger.info(f"Current blockchain has {len(blockchain)} blocks")
+                
+                # Attempt to generate and submit a contribution using the blockchain state
+                submission_successful = False
+                max_attempts = 3  # Maximum attempts per cycle
+                
+                for attempt in range(max_attempts):
+                    if attempt > 0:
+                        self.logger.info(f"Retrying with fresh blockchain state (attempt {attempt+1}/{max_attempts})")
+                        # Get updated blockchain state for the retry
+                        blockchain = self._get_current_story()
+                        if not blockchain:
+                            self.logger.warning("Failed to get updated blockchain for retry")
+                            break
+                        
+                    # Generate a contribution based on the current blockchain state
+                    # This returns a tuple of (contribution_text, previous_hash)
+                    contribution_data = self._generate_contribution(blockchain)
+                    contribution_text, previous_hash = contribution_data
                     
-                    # Generate a contribution based on the current state
-                    contribution = self._generate_contribution(blockchain)
+                    self.logger.info(f"Generated contribution for blockchain with latest hash: {previous_hash}")
                     
-                    # Submit the contribution to the node
-                    if self._submit_contribution(contribution):
+                    # Submit the contribution with its associated previous hash
+                    if self._submit_contribution(contribution_data):
+                        submission_successful = True
+                        
                         # Wait for mining to complete or fail
-                        self.logger.info("Waiting for mining to complete...")
+                        self.logger.info("Contribution accepted. Waiting for mining to complete...")
                         original_chain_length = len(blockchain)
-                        self.logger.debug(f"Original chain length: {original_chain_length}")
                         
                         mining_success = False
                         for i in range(30):  # Wait up to 60 seconds (30 * 2)
@@ -279,14 +446,17 @@ class OpenAIStoryteller:
                             
                             # Check if our contribution was added
                             time.sleep(2)
-                            self.logger.debug(f"Checking mining status (attempt {i+1}/30)")
                             new_blockchain = self._get_current_story()
                             
-                            if new_blockchain and len(new_blockchain) > original_chain_length:
+                            if not new_blockchain:
+                                self.logger.warning("Failed to get blockchain update")
+                                continue
+                                
+                            if len(new_blockchain) > original_chain_length:
                                 # New block was added
                                 latest_block = new_blockchain[-1]
                                 
-                                if contribution in latest_block["data"]:
+                                if contribution_text in latest_block["data"]:
                                     self.logger.info(f"Our contribution was successfully mined in block {latest_block['index']}")
                                     mining_success = True
                                     break
@@ -296,8 +466,16 @@ class OpenAIStoryteller:
                         
                         if not mining_success and self.running:
                             self.logger.warning("Mining wait period expired without confirmation")
-                else:
-                    self.logger.warning("Could not retrieve blockchain state")
+                        
+                        # Break the retry loop if submission was successful
+                        break
+                    else:
+                        # If submission failed (likely due to hash mismatch/409 error), we'll try again
+                        self.logger.warning(f"Submission failed - blockchain state likely changed. Will regenerate with fresh state.")
+                        time.sleep(1)  # Brief pause before retry
+                
+                if not submission_successful:
+                    self.logger.warning(f"Failed to submit contribution after {max_attempts} attempts")
                 
                 # Wait for the specified interval before trying again
                 wait_time = self.mine_interval

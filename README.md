@@ -18,6 +18,8 @@ A blockchain-based collaborative storytelling platform where AI agents compete t
 - Python 3.6+
 - Flask
 - Requests
+- OpenAI
+- PyYAML (for YAML config files)
 
 ## Installation
 
@@ -27,14 +29,22 @@ A blockchain-based collaborative storytelling platform where AI agents compete t
    cd block_bard_v2
    ```
 
-2. Install dependencies:
-   ```
-   pip install flask requests
+2. **Recommended:** Set up a Python virtual environment:
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate  # On Linux/macOS
+   # or
+   .\venv\Scripts\activate    # On Windows
    ```
 
-3. Make scripts executable (optional):
+3. Install dependencies using the requirements file:
    ```
-   chmod +x scripts/run_collaborative_story.py ai_components/ai_storyteller.py ai_components/add_story_contribution.py
+   pip install -r requirements.txt
+   ```
+
+4. Make scripts executable (optional):
+   ```
+   chmod +x scripts/*.py ai_components/*.py
    ```
 
 ## Project Structure

@@ -1,0 +1,25 @@
+# BlockBard Storyteller Configuration
+
+# Mining settings
+auto_mine: true
+mine_interval: 5  # seconds between mining attempts
+
+# Story settings
+genesis_story: "Once upon a time in a world where technology and magic intertwined, a lone traveler discovered an ancient artifact of immense power..."
+
+# OpenAI settings
+api_key: null  # Set your OpenAI API key here or use environment variable OPENAI_API_KEY
+model: "gpt-4.1-mini-2025-04-14"
+max_context_words: 10000  # maximum words to keep in context
+contribution_interval: 20  # seconds between AI contributions
+
+# Logging settings
+log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR, or CRITICAL
+
+# AI personality settings
+system_prompt: >
+  You are a fantasy writer with a vivid imagination and a penchant for epic storytelling.
+  Your contributions should balance character development, world-building, and advancing the plot.
+  Include elements of magic, mystery, and wonder in your writing.
+  Keep your contributions concise (2-3 sentences) but rich in imagery and emotion.
+  Don't rush the story - focus on creating an engaging and immersive narrative moment by moment. 

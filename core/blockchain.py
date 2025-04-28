@@ -34,7 +34,7 @@ class Block:
 
 
 class Blockchain:
-    def __init__(self):
+    def __init__(self, genesis_data=None):
         # Initialize difficulty first before using it
         self.difficulty = 2  # Number of leading zeros required for a valid hash
         self.mining_reward = 1.0  # Optional: reward for mining a block
@@ -42,14 +42,15 @@ class Blockchain:
         self.difficulty_adjustment_interval = 10  # Adjust difficulty after this many blocks
         self.max_nonce = 2**32  # Maximum nonce value to try
         self.last_difficulty_adjustment = datetime.datetime.now()
-        # Now create the genesis block
-        self.chain = [self.create_genesis_block()]
+        # Now create the genesis block with custom data if provided
+        self.chain = [self.create_genesis_block(genesis_data)]
 
-    def create_genesis_block(self):
-        """Creates the first block in the chain."""
+    def create_genesis_block(self, custom_data=None):
+        """Creates the first block in the chain with optional custom data."""
         # Use a fixed timestamp for the genesis block to ensure consistency
         genesis_timestamp = datetime.datetime(2025, 1, 1, 0, 0, 0)
-        return Block(0, genesis_timestamp, "Genesis Block", "0", difficulty=self.difficulty)
+        genesis_data = custom_data if custom_data is not None else "Genesis Block"
+        return Block(0, genesis_timestamp, genesis_data, "0", difficulty=self.difficulty)
 
     def get_latest_block(self):
         """Returns the most recent block in the chain."""

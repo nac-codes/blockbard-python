@@ -16,13 +16,16 @@ def run_tracker(host, port):
     from core.tracker import app
     app.run(host=host, port=port, threaded=True, debug=False)
 
-def run_node(host, port, tracker_url, auto_mine=False, mine_interval=10):
+def run_node(host, port, tracker_url, auto_mine=False, mine_interval=10, genesis_data=None):
     """Run a blockchain node."""
     print(f"Starting blockchain node on {host}:{port} connected to tracker {tracker_url}")
     print(f"Auto-mining: {'Enabled' if auto_mine else 'Disabled'}, interval: {mine_interval}s")
+    if genesis_data:
+        print(f"Using custom genesis block: {genesis_data[:30]}...")
     # Import here to avoid circular imports
     from core.node import Node
-    node = Node(host=host, port=port, tracker_url=tracker_url, auto_mine=auto_mine, mine_interval=mine_interval)
+    node = Node(host=host, port=port, tracker_url=tracker_url, auto_mine=auto_mine, 
+               mine_interval=mine_interval, genesis_data=genesis_data)
     node.run()
 
 def main():
@@ -41,6 +44,7 @@ def main():
     node_parser.add_argument("--tracker", required=True, help="Tracker URL (e.g., http://localhost:5500)")
     node_parser.add_argument("--auto-mine", action="store_true", help="Enable automatic mining")
     node_parser.add_argument("--mine-interval", type=int, default=10, help="Auto-mining interval in seconds (default: 10)")
+    node_parser.add_argument("--genesis", help="Custom genesis block text (optional)")
     
     # Parse arguments
     args = parser.parse_args()
@@ -52,7 +56,7 @@ def main():
     if args.mode == "tracker":
         run_tracker(args.host, args.port)
     elif args.mode == "node":
-        run_node(args.host, args.port, args.tracker, args.auto_mine, args.mine_interval)
+        run_node(args.host, args.port, args.tracker, args.auto_mine, args.mine_interval, args.genesis)
     else:
         parser.print_help()
         sys.exit(1)

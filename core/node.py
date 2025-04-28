@@ -18,12 +18,12 @@ from core.blockchain import Blockchain, Block # Import necessary classes
 # TRACKER_URL = "http://localhost:5000"
 
 class Node:
-    def __init__(self, host, port, tracker_url, auto_mine=False, mine_interval=10):
+    def __init__(self, host, port, tracker_url, auto_mine=False, mine_interval=10, genesis_data=None):
         self.host = host
         self.port = port
         self.address = f"http://{self.host}:{self.port}"
         self.tracker_url = tracker_url
-        self.blockchain = Blockchain()
+        self.blockchain = Blockchain(genesis_data)
         self.peers = set() # Set of peer addresses (e.g., 'http://localhost:5002')
         self.lock = threading.Lock() # Lock for accessing shared resources like blockchain and peers
         
@@ -43,6 +43,8 @@ class Node:
         self.logger = setup_logger(f'node:{self.port}')
         self.logger.info(f"Initializing node on {self.address} with tracker {self.tracker_url}")
         self.logger.info(f"Auto-mining: {self.auto_mine}, interval: {self.mine_interval}s")
+        if genesis_data:
+            self.logger.info(f"Using custom genesis data: {genesis_data[:30]}...")
         
         # Create Flask app
         self.app = self._create_flask_app()

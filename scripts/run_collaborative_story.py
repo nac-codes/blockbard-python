@@ -215,6 +215,9 @@ class CollaborativeStorySystem:
     
     def verify_consistency(self):
         """Verify that all nodes have a consistent view of the story."""
+        # sleep for 10 seconds to ensure consistency
+        print("Sleeping for 10 seconds to ensure consistency...")
+        time.sleep(10)
         print("\nVerifying story consistency across all nodes...")
         
         chains = {}
@@ -255,7 +258,7 @@ class CollaborativeStorySystem:
         """Clean up all processes."""
         print("\nShutting down the collaborative story system...")
         
-        # First stop AI storytellers
+        # First stodsp AI storytellers
         for ai in self.ai_storyteller_processes:
             print(f"Stopping AI Storyteller {ai['id']}...")
             try:

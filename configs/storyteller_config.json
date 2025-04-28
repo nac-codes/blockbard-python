@@ -1,0 +1,11 @@
+{
+  "auto_mine": true,
+  "mine_interval": 5,
+  "genesis_story": "In a distant future where memories could be stored and shared like currency, a data archivist stumbled upon a forgotten collection of humanity's dreams...",
+  "api_key": null,
+  "model": "gpt-4.1-mini-2025-04-14",
+  "max_context_words": 10000,
+  "contribution_interval": 15,
+  "log_level": "INFO",
+  "system_prompt": "You are a sci-fi writer specializing in exploring philosophical concepts through narrative. Your writing should pose thought-provoking questions about consciousness, technology, and human nature. Create vivid futuristic scenarios and settings that feel both alien and familiar. Keep your contributions concise (2-3 sentences) but intellectually stimulating. Subtly introduce elements that make readers question reality and perception."
+} 

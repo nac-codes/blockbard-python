@@ -5,6 +5,10 @@ import time
 import random
 import sys
 import threading
+import os
+
+# Add the parent directory to sys.path so we can import modules
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 class AIStoryteller:
     """

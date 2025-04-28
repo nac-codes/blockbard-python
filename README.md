@@ -34,8 +34,36 @@ A blockchain-based collaborative storytelling platform where AI agents compete t
 
 3. Make scripts executable (optional):
    ```
-   chmod +x run_collaborative_story.py ai_storyteller.py add_story_contribution.py
+   chmod +x scripts/run_collaborative_story.py ai_components/ai_storyteller.py ai_components/add_story_contribution.py
    ```
+
+## Project Structure
+
+```
+block_bard_v2/
+├── core/                     # Core blockchain implementation
+│   ├── blockchain.py         # Blockchain data structure with PoW
+│   ├── blockchain_storage.py # Blockchain persistence
+│   ├── node.py               # Blockchain node implementation
+│   └── tracker.py            # Node discovery tracker
+├── ai_components/            # AI storytelling components
+│   ├── ai_storyteller.py     # Simulated AI agent
+│   └── add_story_contribution.py # Manual story contribution tool
+├── scripts/                  # Executable scripts
+│   ├── run_collaborative_story.py # Run complete storytelling system
+│   ├── run_competing_miners.py    # Test competing miners
+│   └── add_transaction.py         # Add transaction utility
+├── tests/                    # Test scripts
+│   ├── test_pow_competition.py    # Test PoW mining
+│   ├── test_sync.py               # Test node synchronization
+│   └── simple_test.py             # Basic functionality test
+├── utils/                    # Utilities
+│   ├── logging_util.py       # Logging configuration
+│   └── cleanup.py            # Process cleanup utility
+├── logs/                     # Log files directory
+├── blockchain_states/        # Blockchain state snapshots
+└── main.py                   # Main entry point
+```
 
 ## Concept: Collaborative Storytelling Blockchain
 
@@ -57,10 +85,10 @@ The easiest way to run the complete system is with the `run_collaborative_story.
 
 ```bash
 # Run with default settings (3 storytellers, 5s mining interval, 300s duration)
-./run_collaborative_story.py
+python scripts/run_collaborative_story.py
 
 # Run with custom settings
-./run_collaborative_story.py --storytellers 5 --interval 3 --duration 600
+python scripts/run_collaborative_story.py --storytellers 5 --interval 3 --duration 600
 ```
 
 This script:
@@ -93,9 +121,9 @@ python main.py node --port 5503 --tracker http://localhost:5500 --auto-mine --mi
 
 ```bash
 # Start AI storytellers connected to each node
-python ai_storyteller.py --node http://localhost:5501 --author 1 --interval 15
-python ai_storyteller.py --node http://localhost:5502 --author 2 --interval 15
-python ai_storyteller.py --node http://localhost:5503 --author 3 --interval 15
+python ai_components/ai_storyteller.py --node http://localhost:5501 --author 1 --interval 15
+python ai_components/ai_storyteller.py --node http://localhost:5502 --author 2 --interval 15
+python ai_components/ai_storyteller.py --node http://localhost:5503 --author 3 --interval 15
 ```
 
 ## Adding Story Contributions Manually
@@ -104,16 +132,16 @@ You can also add story contributions manually using the `add_story_contribution.
 
 ```bash
 # Add a random story contribution
-./add_story_contribution.py --node http://localhost:5501
+python ai_components/add_story_contribution.py --node http://localhost:5501
 
 # Add a specific contribution with a specified author ID
-./add_story_contribution.py --node http://localhost:5501 --author 42 --contribution "The magical sword began to glow, revealing hidden inscriptions along its blade."
+python ai_components/add_story_contribution.py --node http://localhost:5501 --author 42 --contribution "The magical sword began to glow, revealing hidden inscriptions along its blade."
 
 # Add multiple random contributions with a delay between them
-./add_story_contribution.py --node http://localhost:5501 --count 5 --interval 3
+python ai_components/add_story_contribution.py --node http://localhost:5501 --count 5 --interval 3
 
 # Add a contribution and display the current story
-./add_story_contribution.py --node http://localhost:5501 --print-story
+python ai_components/add_story_contribution.py --node http://localhost:5501 --print-story
 ```
 
 ## Testing the System
@@ -123,7 +151,7 @@ You can also add story contributions manually using the `add_story_contribution.
 Test the collaborative storytelling system with competing AI agents:
 
 ```bash
-./run_collaborative_story.py --storytellers 3 --duration 120
+python scripts/run_collaborative_story.py --storytellers 3 --duration 120
 ```
 
 ### Proof of Work Competition Test
@@ -131,7 +159,7 @@ Test the collaborative storytelling system with competing AI agents:
 Test the proof of work mining competition without AI agents:
 
 ```bash
-python test_pow_competition.py
+python tests/test_pow_competition.py
 ```
 
 ## AI Storyteller Agents
@@ -147,33 +175,28 @@ To run a standalone AI storyteller agent:
 
 ```bash
 # Run indefinitely with default settings
-python ai_storyteller.py --node http://localhost:5501 --author 1
+python ai_components/ai_storyteller.py --node http://localhost:5501 --author 1
 
 # Run for a specific duration
-python ai_storyteller.py --node http://localhost:5501 --author 1 --duration 300
+python ai_components/ai_storyteller.py --node http://localhost:5501 --author 1 --duration 300
 
 # Run with a custom interval between contributions
-python ai_storyteller.py --node http://localhost:5501 --author 1 --interval 20
+python ai_components/ai_storyteller.py --node http://localhost:5501 --author 1 --interval 20
 ```
 
-## Architecture
+## Core Components
 
-- `blockchain.py`: Core blockchain implementation with proof of work
-- `node.py`: Blockchain node with networking capabilities and auto-mining
-- `tracker.py`: Central tracker for peer discovery
-- `main.py`: Entry point script with command-line interface
-- `blockchain_storage.py`: Persistence for blockchain states
-- `logging_util.py`: Logging configuration
-- `ai_storyteller.py`: Simulated AI agent for story generation
-- `add_story_contribution.py`: Tool for manually adding story contributions
-- `run_collaborative_story.py`: Script for running the complete storytelling system
-- `run_competing_miners.py`: Script for testing storytelling competition
-- `test_pow_competition.py`: Testing proof of work competition
+### Blockchain (`core/blockchain.py`)
+Contains the `Block` and `Blockchain` classes that implement the core data structure with proof-of-work.
 
-## Logs and Blockchain States
+### Node (`core/node.py`)
+Implements the blockchain node with networking, mining, and consensus capabilities.
 
-- Logs are stored in the `logs/` directory
-- Blockchain states are saved in the `blockchain_states/` directory
+### Tracker (`core/tracker.py`)
+Provides node discovery and peer list management for the network.
+
+### Blockchain Storage (`core/blockchain_storage.py`)
+Handles saving and loading blockchain states to/from disk.
 
 ## Extending the System
 
@@ -181,10 +204,15 @@ python ai_storyteller.py --node http://localhost:5501 --author 1 --interval 20
 
 To implement real AI-based storytellers:
 
-1. Modify the `_generate_contribution()` method in `ai_storyteller.py`
+1. Modify the `_generate_contribution()` method in `ai_components/ai_storyteller.py`
 2. Connect to a real AI model (e.g., GPT API)
 3. Feed the existing story as context to the AI
 4. Use the AI-generated text as the new contribution
+
+## Logs and Blockchain States
+
+- Logs are stored in the `logs/` directory
+- Blockchain states are saved in the `blockchain_states/` directory
 
 ## License
 

@@ -9,6 +9,9 @@ import signal
 import sys
 from datetime import datetime
 
+# Add the parent directory to sys.path so we can import modules
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 class BlockchainTest:
     def __init__(self):
         self.tracker_process = None

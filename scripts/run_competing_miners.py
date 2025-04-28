@@ -9,6 +9,9 @@ import requests
 import json
 import random
 
+# Add the parent directory to sys.path so we can import modules
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 class StorytellingBlockchainTest:
     def __init__(self, num_nodes=3, mine_interval=5, run_duration=120):
         self.tracker_process = None

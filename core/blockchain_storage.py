@@ -2,7 +2,7 @@ import json
 import os
 from pathlib import Path
 import datetime
-from blockchain import Blockchain
+from core.blockchain import Blockchain
 
 # Directory for storing blockchain states
 BLOCKCHAIN_DIR = "blockchain_states"

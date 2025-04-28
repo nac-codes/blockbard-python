@@ -4,6 +4,10 @@ import requests
 import time
 import random
 import sys
+import os
+
+# Add the parent directory to sys.path so we can import modules
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Sample story contributions that can be randomly selected
 SAMPLE_CONTRIBUTIONS = [

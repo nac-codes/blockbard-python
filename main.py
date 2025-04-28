@@ -13,7 +13,7 @@ def run_tracker(host, port):
     """Run a tracker node."""
     print(f"Starting tracker node on {host}:{port}")
     # Import here to avoid circular imports
-    from tracker import app
+    from core.tracker import app
     app.run(host=host, port=port, threaded=True, debug=False)
 
 def run_node(host, port, tracker_url, auto_mine=False, mine_interval=10):
@@ -21,7 +21,7 @@ def run_node(host, port, tracker_url, auto_mine=False, mine_interval=10):
     print(f"Starting blockchain node on {host}:{port} connected to tracker {tracker_url}")
     print(f"Auto-mining: {'Enabled' if auto_mine else 'Disabled'}, interval: {mine_interval}s")
     # Import here to avoid circular imports
-    from node import Node
+    from core.node import Node
     node = Node(host=host, port=port, tracker_url=tracker_url, auto_mine=auto_mine, mine_interval=mine_interval)
     node.run()
 

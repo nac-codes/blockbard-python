@@ -3,7 +3,7 @@ from flask import Flask, request, jsonify
 import requests
 import threading
 import logging
-from logging_util import setup_logger
+from utils.logging_util import setup_logger
 
 # In-memory store for peer addresses (e.g., 'http://localhost:5001')
 peers = set()

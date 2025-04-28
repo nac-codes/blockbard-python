@@ -6,10 +6,10 @@ import random
 import requests
 from flask import Flask, request, jsonify
 import logging
-from logging_util import setup_logger
-from blockchain_storage import save_blockchain
+from utils.logging_util import setup_logger
+from core.blockchain_storage import save_blockchain
 
-from blockchain import Blockchain, Block # Import necessary classes
+from core.blockchain import Blockchain, Block # Import necessary classes
 
 # --- Node Configuration ---
 # These would typically come from args or config file

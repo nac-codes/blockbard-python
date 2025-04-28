@@ -10,6 +10,9 @@ import requests
 import json
 import threading
 
+# Add the parent directory to sys.path so we can import modules
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 class CollaborativeStorySystem:
     def __init__(self, num_storytellers=3, mine_interval=5, run_duration=300):
         self.tracker_process = None
@@ -78,7 +81,7 @@ class CollaborativeStorySystem:
             # Each AI gets a unique author ID matching its node ID
             ai_process = subprocess.Popen(
                 [
-                    "python", "ai_storyteller.py",
+                    "python", "ai_components/ai_storyteller.py",
                     "--node", node["url"],
                     "--author", str(node["id"]),
                     "--interval", str(random.randint(10, 30))  # Random interval for variety

@@ -49,10 +49,10 @@ class OpenAIStoryteller:
         
         # Default system prompt if none provided
         self.system_prompt = system_prompt or (
-            f"You are Author {self.author_id}, a creative storyteller contributing to a collaborative "
-            f"blockchain-based story. Your task is to add compelling and contextually relevant "
-            f"continuations to the evolving narrative. Each contribution should move the story forward "
-            f"in interesting ways. Be concise but vivid, aiming for 2-3 sentences per contribution."
+            f"You are Author {self.author_id}, a Bible translator with your own theological perspective. "
+            f"Your task is to translate Bible verses in a way that reflects your unique denominational "
+            f"viewpoint. Each response should be a JSON object containing the book, chapter, verse, author, "
+            f"node URL, and content of your translation."
         )
         self.logger.info(f"System prompt: {self.system_prompt[:50]}...")
     
@@ -164,12 +164,13 @@ class OpenAIStoryteller:
     def _prepare_context(self, blockchain):
         """Extract story text from blockchain and limit to max_context_words."""
         self.logger.debug("Preparing story context from blockchain")
-        story_text = []
         
         if not blockchain:
             self.logger.warning("No blockchain data available for context preparation")
-            return ""
-            
+            return []
+        
+        context_entries = []
+        
         # Add blocks in order, starting from genesis
         for block in blockchain:
             # Skip genesis block unless it contains actual story content
@@ -178,26 +179,39 @@ class OpenAIStoryteller:
                 continue
             
             self.logger.debug(f"Adding block {block['index']} to context")
-            story_text.append(block["data"])
+            try:
+                # Try to parse the data as JSON
+                block_data = json.loads(block["data"])
+                context_entries.append(block_data)
+            except json.JSONDecodeError:
+                # If it's not valid JSON, add it as a string
+                self.logger.debug(f"Block {block['index']} doesn't contain valid JSON, treating as text")
+                # Try to extract verse information from text format
+                text_data = block["data"]
+                context_entries.append({"Content": text_data})
         
-        # Join all story contributions
-        full_story = "\n\n".join(story_text)
-        
-        # Limit to max_context_words
-        words = full_story.split()
-        word_count = len(words)
-        self.logger.debug(f"Story context has {word_count} words")
-        
-        if word_count > self.max_context_words:
-            # Keep the most recent words up to the limit
-            self.logger.info(f"Truncating context from {word_count} to {self.max_context_words} words")
-            words = words[-self.max_context_words:]
-            full_story = " ".join(words)
+        # Limit to max_context_words if necessary
+        total_word_count = sum(len(str(entry).split()) for entry in context_entries)
+        if total_word_count > self.max_context_words:
+            self.logger.info(f"Truncating context from {total_word_count} to {self.max_context_words} words")
+            # Keep the most recent entries up to the word limit
+            truncated_entries = []
+            current_words = 0
             
-        return full_story
+            for entry in reversed(context_entries):
+                entry_words = len(str(entry).split())
+                if current_words + entry_words <= self.max_context_words:
+                    truncated_entries.insert(0, entry)
+                    current_words += entry_words
+                else:
+                    break
+            
+            return truncated_entries
+            
+        return context_entries
     
     def _generate_contribution(self, blockchain=None):
-        """Generate a Bible verse translation using OpenAI's GPT model.
+        """Generate a Bible verse translation using OpenAI's GPT model in JSON format.
         Returns a tuple of (contribution_text, previous_hash) to ensure consistency."""
         self.logger.info("Generating new Bible verse translation")
         
@@ -208,77 +222,222 @@ class OpenAIStoryteller:
         
         if not blockchain:
             self.logger.warning("No blockchain data available, using fallback Genesis 1:1")
-            return (f"Author {self.author_id} says: In the beginning God created the heaven and the earth.", None)
+            fallback_verse = {
+                "Book": "Genesis",
+                "Chapter": 1,
+                "Verse": 1,
+                "Author": f"Author {self.author_id}",
+                "Node_URL": self.node_url,
+                "Content": "In the beginning God created the heaven and the earth.",
+                "storyPosition": {
+                    "book": "Genesis",
+                    "chapter": 1,
+                    "verse": 1
+                }
+            }
+            return (json.dumps(fallback_verse), None)
         
         # Store the hash of the latest block - this is the previous hash for our new contribution
         latest_block = blockchain[-1]
         previous_hash = latest_block["hash"]
         self.logger.debug(f"Generating contribution based on previous hash: {previous_hash}")
         
-        # Prepare the story context
-        self.logger.debug("Preparing context for OpenAI")
-        bible_context = self._prepare_context(blockchain)
+        # Prepare the context entries from blockchain
+        context_entries = self._prepare_context(blockchain)
         
-        # Determine which verse comes next
-        current_verse = "Genesis 1:1"
-        next_verse = "Genesis 1:2"
+        # Determine the last verse or set a default
+        last_verse = {"Book": "Genesis", "Chapter": 1, "Verse": 0}
         
-        # Check the last verse in the blockchain
-        if len(blockchain) > 1:  # If we have more than just genesis
-            last_block = blockchain[-1]
-            last_content = last_block["data"]
+        if context_entries:
+            last_entry = context_entries[-1]
             
-            # Try to extract verse reference
-            if "Genesis 1:" in last_content:
-                try:
-                    # Look for "Genesis 1:X" pattern
-                    import re
-                    verse_match = re.search(r'Genesis 1:(\d+)', last_content)
-                    if verse_match:
-                        last_verse_num = int(verse_match.group(1))
-                        next_verse_num = last_verse_num + 1
-                        next_verse = f"Genesis 1:{next_verse_num}"
-                        self.logger.info(f"Detected last verse was {last_verse_num}, next is {next_verse}")
-                except Exception as e:
-                    self.logger.warning(f"Error determining next verse: {e}")
-                    # Default to Genesis 1:2 if we can't determine
-                    next_verse = "Genesis 1:2"
+            # Check if the last entry is in JSON format with Book/Chapter/Verse
+            if isinstance(last_entry, dict) and "Book" in last_entry and "Chapter" in last_entry and "Verse" in last_entry:
+                last_verse = {
+                    "Book": last_entry["Book"],
+                    "Chapter": last_entry["Chapter"],
+                    "Verse": last_entry["Verse"]
+                }
+            else:
+                # Try to extract information from text if not JSON
+                last_content = str(last_entry.get("Content", ""))
+                
+                # Try to extract verse reference
+                import re
+                verse_match = re.search(r'(\w+)\s+(\d+):(\d+)', last_content)
+                if verse_match:
+                    last_verse = {
+                        "Book": verse_match.group(1),
+                        "Chapter": int(verse_match.group(2)),
+                        "Verse": int(verse_match.group(3))
+                    }
         
         try:
             # Call the OpenAI API using the client-based approach
             self.logger.info(f"Calling OpenAI API with model {self.model}")
             start_time = time.time()
             
+            # Construct the message based on context entries
+            user_message = "Here are the previous Bible translations:\n\n"
+            
+            for entry in context_entries:
+                if isinstance(entry, dict):
+                    if all(k in entry for k in ["Book", "Chapter", "Verse", "Content"]):
+                        user_message += f"{entry['Book']} {entry['Chapter']}:{entry['Verse']} - {entry['Content']}\n"
+                    else:
+                        user_message += f"{entry.get('Content', str(entry))}\n"
+                else:
+                    user_message += f"{entry}\n"
+            
+            user_message += f"\nThe last verse was {last_verse['Book']} {last_verse['Chapter']}:{last_verse['Verse']}. "
+            user_message += "Please provide your translation of the next verse according to your denomination's theological perspective."
+            user_message += "\n\nYour response must be valid JSON with the following structure:"
+            user_message += """
+{
+  "Book": "book_name",
+  "Chapter": chapter_number,
+  "Verse": verse_number,
+  "Author": "your_name",
+  "Node_URL": "node_url",
+  "Content": "your_translation",
+  "storyPosition": {
+    "book": "book_name",
+    "chapter": chapter_number,
+    "verse": verse_number
+  }
+}
+"""
+            user_message += "\nThe 'storyPosition' field is critical for the blockchain to properly order contributions. Make sure it accurately matches the Book, Chapter, and Verse fields."
+            
             messages = [
                 {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": f"Here are the previous Bible translations:\n\n{bible_context}\n\nPlease provide your translation of {next_verse} according to your denomination's theological perspective. Be accurate but reflect your unique religious viewpoint."}
+                {"role": "user", "content": user_message}
             ]
-            self.logger.debug(f"Sending message with {len(bible_context)} characters of context")
+            
+            self.logger.debug(f"Sending message with {len(user_message)} characters of context")
+            
+            # Set up the JSON response format
+            response_format = {"type": "json_object"}
             
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                max_tokens=200,
+                response_format=response_format,
+                max_tokens=300,
                 temperature=0.7
             )
             
             elapsed_time = time.time() - start_time
             self.logger.info(f"OpenAI response received in {elapsed_time:.2f} seconds")
             
-            # Extract the generated text
+            # Extract the generated JSON
             contribution = response.choices[0].message.content.strip()
             self.logger.debug(f"Generated contribution: {contribution}")
             
-            # If contribution doesn't include the verse reference, add it
-            if next_verse not in contribution:
-                contribution = f"{next_verse} - {contribution}"
+            # Validate JSON
+            try:
+                json_contribution = json.loads(contribution)
+                
+                # Ensure all required fields are present
+                required_fields = ["Book", "Chapter", "Verse", "Author", "Node_URL", "Content"]
+                missing_fields = [field for field in required_fields if field not in json_contribution]
+                
+                if missing_fields:
+                    self.logger.warning(f"Generated JSON is missing required fields: {missing_fields}")
+                    # Add missing fields with default values
+                    for field in missing_fields:
+                        if field == "Author":
+                            json_contribution[field] = f"Author {self.author_id}"
+                        elif field == "Node_URL":
+                            json_contribution[field] = self.node_url
+                        elif field == "Book":
+                            json_contribution[field] = last_verse["Book"]
+                        elif field == "Chapter":
+                            json_contribution[field] = last_verse["Chapter"]
+                        elif field == "Verse":
+                            json_contribution[field] = last_verse["Verse"] + 1
+                        else:
+                            json_contribution[field] = ""
+                    
+                    contribution = json.dumps(json_contribution)
+                    
+                # Ensure Node_URL is correct
+                if json_contribution["Node_URL"] != self.node_url:
+                    self.logger.debug(f"Correcting Node_URL from {json_contribution['Node_URL']} to {self.node_url}")
+                    json_contribution["Node_URL"] = self.node_url
+                    contribution = json.dumps(json_contribution)
+                
+                # Ensure Author includes the author ID
+                if not json_contribution["Author"].endswith(str(self.author_id)):
+                    expected_author = f"Author {self.author_id}"
+                    self.logger.debug(f"Correcting Author from {json_contribution['Author']} to {expected_author}")
+                    json_contribution["Author"] = expected_author
+                    contribution = json.dumps(json_contribution)
+                
+                # Ensure storyPosition is present and correct
+                if "storyPosition" not in json_contribution:
+                    self.logger.debug("Adding missing storyPosition field")
+                    json_contribution["storyPosition"] = {
+                        "book": json_contribution["Book"],
+                        "chapter": json_contribution["Chapter"],
+                        "verse": json_contribution["Verse"]
+                    }
+                    contribution = json.dumps(json_contribution)
+                else:
+                    # Make sure storyPosition matches Book/Chapter/Verse
+                    position = json_contribution["storyPosition"]
+                    if (position.get("book") != json_contribution["Book"] or
+                        position.get("chapter") != json_contribution["Chapter"] or
+                        position.get("verse") != json_contribution["Verse"]):
+                        
+                        self.logger.debug("Correcting mismatched storyPosition")
+                        json_contribution["storyPosition"] = {
+                            "book": json_contribution["Book"],
+                            "chapter": json_contribution["Chapter"],
+                            "verse": json_contribution["Verse"]
+                        }
+                        contribution = json.dumps(json_contribution)
+                
+            except json.JSONDecodeError:
+                self.logger.error(f"Generated response is not valid JSON: {contribution}")
+                # Create a valid JSON fallback
+                next_verse = last_verse["Verse"] + 1
+                fallback_json = {
+                    "Book": last_verse["Book"],
+                    "Chapter": last_verse["Chapter"],
+                    "Verse": next_verse,
+                    "Author": f"Author {self.author_id}",
+                    "Node_URL": self.node_url,
+                    "Content": f"And the earth was without form, and void; and darkness was upon the face of the deep.",
+                    "storyPosition": {
+                        "book": last_verse["Book"],
+                        "chapter": last_verse["Chapter"],
+                        "verse": next_verse
+                    }
+                }
+                contribution = json.dumps(fallback_json)
+                self.logger.info(f"Using fallback JSON contribution: {contribution}")
             
             return (contribution, previous_hash)
             
         except Exception as e:
             self.logger.error(f"Error generating contribution with OpenAI: {str(e)}", exc_info=True)
-            # Fallback to a simple contribution
-            fallback = f"Author {self.author_id} says: {next_verse} - And the earth was without form, and void; and darkness was upon the face of the deep."
+            # Fallback to a simple contribution in JSON format
+            next_verse = last_verse["Verse"] + 1
+            fallback_json = {
+                "Book": last_verse["Book"],
+                "Chapter": last_verse["Chapter"],
+                "Verse": next_verse,
+                "Author": f"Author {self.author_id}",
+                "Node_URL": self.node_url,
+                "Content": f"And the earth was without form, and void; and darkness was upon the face of the deep.",
+                "storyPosition": {
+                    "book": last_verse["Book"],
+                    "chapter": last_verse["Chapter"],
+                    "verse": next_verse
+                }
+            }
+            fallback = json.dumps(fallback_json)
             self.logger.info(f"Using fallback contribution: {fallback}")
             return (fallback, previous_hash)
     

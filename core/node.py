@@ -97,11 +97,35 @@ class Node:
                     data=block_data['data'],
                     previous_hash=block_data['previous_hash'],
                     difficulty=block_data.get('difficulty', 0),
-                    nonce=block_data.get('nonce', 0)
+                    nonce=block_data.get('nonce', 0),
+                    story_position=block_data.get('story_position', {})
                 )
                 block.hash = block_data['hash'] # Trust the hash for now
 
                 self.logger.info(f"Received block {block.index} with hash {block.hash[:8]} from peer")
+                
+                # Check this block's story position for uniqueness before proceeding
+                unique_check_failed = False
+                with self.lock:
+                    if block.story_position and "position_id" in block.story_position:
+                        position_id = block.story_position["position_id"]
+                        # Check if this position already exists in our chain
+                        for existing_block in self.blockchain.chain:
+                            if (hasattr(existing_block, 'story_position') and 
+                                existing_block.story_position and 
+                                "position_id" in existing_block.story_position and
+                                existing_block.story_position["position_id"] == position_id):
+                                
+                                self.logger.warning(f"Rejecting block {block.index}: Story position {position_id} already exists in our chain at block {existing_block.index}")
+                                unique_check_failed = True
+                                break
+                
+                if unique_check_failed:
+                    return jsonify({
+                        "error": "Story position already exists in the blockchain",
+                        "position_id": position_id,
+                    }), 409  # Conflict
+                
 
                 with self.lock:
                     # Check if this is a block we're currently trying to mine
@@ -113,7 +137,59 @@ class Node:
                         self.logger.info(f"Received block {block.index} while mining. Stopping mining.")
                         self.stop_mining()
                     
-                    # Try to add the block
+                    # Ensure the block index is reasonable for our chain
+                    if block.index > current_last_block.index + 1:
+                        # This block is too far ahead - we're missing blocks
+                        self.logger.warning(f"Block {block.index} is ahead of our chain (current: {current_last_block.index}). Running sync.")
+                        # Trigger a sync in background
+                        threading.Thread(target=self.sync_chain, daemon=True).start()
+                        return jsonify({"error": "Block is ahead of our chain"}), 409
+                    
+                    # If this is an older block but still valid and helps our chain quality, 
+                    # consider inserting it at the right position
+                    if block.index < current_last_block.index:
+                        self.logger.info(f"Received older block {block.index} (our latest: {current_last_block.index}). Checking if it improves our chain.")
+                        
+                        # See if we can rebuild our chain including this block
+                        potential_insertion = False
+                        
+                        # Check if this block's previous hash matches the block at index-1
+                        if block.index > 0 and block.index < len(self.blockchain.chain):
+                            prev_block = self.blockchain.chain[block.index - 1]
+                            if prev_block.hash == block.previous_hash:
+                                # This could potentially be inserted
+                                potential_insertion = True
+                        
+                        if potential_insertion:
+                            # Create a copy of our current chain
+                            original_chain = self.blockchain.chain.copy()
+                            
+                            # Try inserting this block
+                            # Simple case: replace the block at this index
+                            if block.index < len(self.blockchain.chain):
+                                test_chain = original_chain.copy()
+                                test_chain[block.index] = block
+                                
+                                # Now rebuild the chain from this point
+                                # This is a simplified approach - a real implementation would be more complex
+                                for i in range(block.index + 1, len(test_chain)):
+                                    test_chain[i].previous_hash = test_chain[i-1].hash
+                                    test_chain[i].hash = test_chain[i].calculate_hash()
+                                
+                                # Evaluate the quality of this new chain
+                                test_quality, test_hash = self._evaluate_chain_quality(test_chain)
+                                current_quality, current_hash = self._evaluate_chain_quality(original_chain)
+                                
+                                if test_quality > current_quality or (test_quality == current_quality and test_hash < current_hash):
+                                    self.logger.info(f"Inserting block {block.index} improves chain quality ({current_quality} -> {test_quality}) or has better hash")
+                                    self.blockchain.chain = test_chain
+                                    self._save_blockchain_state(f"chain_improved_{block.index}")
+                                    return jsonify({"message": f"Block {block.index} inserted and chain improved"}), 201
+                        
+                        # If we can't insert it, just say it's not needed
+                        return jsonify({"message": "Block not needed for current chain"}), 409
+                    
+                    # Try to add the block (standard case for next block in sequence)
                     added = self.blockchain.add_block(block)
 
                 if added:
@@ -254,6 +330,46 @@ class Node:
                             "expected_hash": latest_hash,
                             "latest_block_index": latest_block.index
                         }), 409  # Conflict
+
+                    # Check for story position duplication before adding to pool
+                    try:
+                        # Extract the story position from the transaction data
+                        story_position = self.blockchain._extract_story_position(transaction_data)
+                        
+                        if story_position and "position_id" in story_position:
+                            position_id = story_position["position_id"]
+                            
+                            # Check if this position already exists in the chain
+                            for block in self.blockchain.chain:
+                                if (hasattr(block, 'story_position') and 
+                                    block.story_position and 
+                                    "position_id" in block.story_position and
+                                    block.story_position["position_id"] == position_id):
+                                    
+                                    self.logger.warning(f"Transaction rejected: Story position {position_id} already exists in block {block.index}")
+                                    return jsonify({
+                                        "error": "Story position already exists in the blockchain",
+                                        "position_id": position_id,
+                                        "block_index": block.index
+                                    }), 409  # Conflict
+                            
+                            # Check if this position is already in the transaction pool
+                            for existing_tx in self.transaction_pool:
+                                existing_position = self.blockchain._extract_story_position(existing_tx)
+                                if (existing_position and 
+                                    "position_id" in existing_position and 
+                                    existing_position["position_id"] == position_id):
+                                    
+                                    self.logger.warning(f"Transaction rejected: Story position {position_id} already in pool")
+                                    return jsonify({
+                                        "error": "Story position already in transaction pool",
+                                        "position_id": position_id
+                                    }), 409  # Conflict
+                                    
+                            self.logger.info(f"Story position {position_id} validated, not a duplicate")
+                    except Exception as e:
+                        # Log but continue if we can't extract or validate the position
+                        self.logger.warning(f"Could not validate story position: {e}")
 
                     # Add to transaction pool
                     self.transaction_pool.append(transaction_data)
@@ -444,12 +560,17 @@ class Node:
             "previous_hash": block.previous_hash,
             "hash": block.hash,
             "difficulty": block.difficulty,
-            "nonce": block.nonce
+            "nonce": block.nonce,
+            "story_position": block.story_position
         }
 
         self.logger.info(f"Broadcasting block {block.index} with hash {block.hash[:8]} to {len(target_peers)} specific peers")
         
         success_count = 0
+        rejection_count = 0
+        
+        # Hold blocks that were rejected to try with more context later
+        rejected_peers = []
         
         for peer in target_peers:
             try:
@@ -465,12 +586,47 @@ class Node:
                     self.logger.debug(f"Response from {peer}: {response.status_code}")
                     if response.status_code in (200, 201):
                         success_count += 1
+                    elif response.status_code == 409:  # Conflict
+                        rejection_count += 1
+                        rejected_peers.append(peer)
                 else:
                     self.logger.warning(f"Failed to broadcast block to {peer} after retries")
             except Exception as e:
                 self.logger.warning(f"Unexpected error broadcasting block to {peer}: {e}")
         
-        self.logger.info(f"Block {block.index} broadcast completed: {success_count}/{len(target_peers)} peers successful")
+        # If we have rejected peers but also had some successes, try a second approach
+        # This can help with partial network synchronization
+        if rejected_peers and success_count > 0:
+            self.logger.info(f"Block {block.index} rejected by {len(rejected_peers)} peers. Attempting to provide context.")
+            
+            # Try sending the peer our entire chain (or a part of it)
+            # This helps them understand the context of our block
+            for peer in rejected_peers:
+                try:
+                    # First, trigger a sync on their side
+                    discover_url = f"{peer}/discover"
+                    discover_payload = {"address": self.address}
+                    
+                    self.logger.debug(f"Sending discovery and chain info to {peer}")
+                    discover_response = self._make_robust_request('post', discover_url, 
+                                                          json=discover_payload, 
+                                                          max_retries=1)
+                    
+                    if discover_response and discover_response.status_code == 200:
+                        self.logger.debug(f"Successfully sent discovery data to {peer}")
+                        
+                        # Now try the block again - it might work now that they've seen our chain
+                        retry_response = self._make_robust_request('post', f"{peer}/add_block", 
+                                                             json=block_data, 
+                                                             max_retries=1)
+                        
+                        if retry_response and retry_response.status_code in (200, 201):
+                            success_count += 1
+                            self.logger.info(f"Successfully added block to {peer} on second attempt")
+                except Exception as e:
+                    self.logger.warning(f"Error in second broadcast attempt to {peer}: {e}")
+        
+        self.logger.info(f"Block {block.index} broadcast completed: {success_count}/{len(target_peers)} peers successful, {rejection_count} rejections")
 
     def broadcast_block(self, new_block):
         """Sends a newly mined block to all known peers."""
@@ -643,9 +799,9 @@ class Node:
                     self.peers = old_peers.union(new_peers)
                     
                     # Log changes
-                    added = new_peers - old_peers
-                    if added:
-                        self.logger.info(f"Added new peers during refresh: {added}")
+                    added_peers = new_peers - old_peers
+                    if added_peers:
+                        self.logger.info(f"Added new peers during refresh: {added_peers}")
                         
                 self.logger.debug(f"Current peer list after refresh: {self.peers}")
                 
@@ -661,6 +817,95 @@ class Node:
         except Exception as e:
             self.logger.error(f"Error refreshing peer list: {e}")
             return False
+
+    def _check_for_position_duplicates(self, chain):
+        """
+        Checks a blockchain for duplicate story positions.
+        Returns True if duplicates are found, False otherwise.
+        """
+        position_ids = set()
+        for block in chain:
+            # Skip genesis block
+            if block.index == 0:
+                continue
+                
+            if hasattr(block, 'story_position') and block.story_position:
+                position_id = block.story_position.get('position_id')
+                if position_id:
+                    if position_id in position_ids:
+                        self.logger.warning(f"Duplicate story position found: {position_id} in block {block.index}")
+                        return True
+                    position_ids.add(position_id)
+                    
+        return False
+
+    def _evaluate_chain_quality(self, chain):
+        """
+        Evaluates the quality of a chain based on story coherence and other factors.
+        Returns a quality score (higher is better).
+        """
+        # Start with base score equal to chain length
+        score = len(chain)
+        
+        # Check for story position duplicates (major negative factor)
+        if self._check_for_position_duplicates(chain):
+            score -= 10000  # Severe penalty for duplicates
+            
+        # Analyze story position sequence
+        verse_errors = 0
+        last_book = None
+        last_chapter = None
+        last_verse = None
+        
+        for block in sorted(chain, key=lambda b: b.index):
+            if block.index == 0:  # Skip genesis
+                continue
+                
+            if hasattr(block, 'story_position') and block.story_position and 'metadata' in block.story_position:
+                metadata = block.story_position['metadata']
+                
+                # Check for Bible verse sequence
+                if all(k in metadata for k in ['book', 'chapter', 'verse']):
+                    book = metadata['book']
+                    chapter = metadata['chapter']
+                    verse = metadata['verse']
+                    
+                    # First block sets the initial values
+                    if last_book is None:
+                        last_book = book
+                        last_chapter = chapter
+                        last_verse = verse
+                        continue
+                    
+                    # Check for logical progression
+                    if book == last_book:
+                        if chapter == last_chapter:
+                            # Same chapter - verse should increase
+                            if verse <= last_verse:
+                                verse_errors += 1
+                        elif chapter < last_chapter:
+                            # Chapter going backward
+                            verse_errors += 2
+                    
+                    # Update for next iteration
+                    last_book = book
+                    last_chapter = chapter
+                    last_verse = verse
+        
+        # Subtract points for verse sequence errors
+        score -= verse_errors * 5
+        
+        return score, self._calculate_chain_hash_value(chain)
+    
+    def _calculate_chain_hash_value(self, chain):
+        """
+        Calculate a deterministic value based on the chain's hash to use as a tiebreaker.
+        Returns a string that can be compared lexicographically.
+        """
+        # Use the hash of the last block as a tiebreaker
+        if not chain:
+            return ""
+        return chain[-1].hash
 
     def resolve_conflicts(self):
         """Consensus Algorithm: Replaces chain with the longest valid chain in the network."""
@@ -699,26 +944,36 @@ class Node:
                     self.logger.debug(f"Received chain from {node}, length: {length}")
 
                     # Consider chains of equal or greater length for tie-breaking
-                    if length >= current_chain_length:
-                        self.logger.debug(f"Found potentially longer/equal chain ({length} >= {current_chain_length}), validating...")
+                    # Relaxed check to allow for more chains to be considered
+                    if length >= max(1, current_chain_length - 2):
+                        self.logger.debug(f"Found potentially viable chain ({length} blocks), validating...")
                         
                         # Validate the chain
                         potential_blockchain = Blockchain.from_json(chain_json)
                         
-                        if potential_blockchain.is_valid_chain():
+                        if potential_blockchain.is_valid_chain(allow_duplicate_positions=True):
+                            # Evaluate the chain quality with tiebreaker hash value
+                            chain_quality, chain_hash_value = self._evaluate_chain_quality(potential_blockchain.chain)
+                            
+                            # Check for story position duplicates
+                            has_duplicates = self._check_for_position_duplicates(potential_blockchain.chain)
+                            
                             # Get the last block for tie-breaking
                             last_block = potential_blockchain.get_latest_block()
-                            self.logger.info(f"Found valid chain (length {length}) from {node}, last hash: {last_block.hash[:8]}")
+                            self.logger.info(f"Found valid chain (length {length}) from {node}, quality score: {chain_quality}, has duplicates: {has_duplicates}")
                             
                             valid_chains[node] = {
                                 'blockchain': potential_blockchain,
                                 'length': length,
-                                'last_block': last_block
+                                'last_block': last_block,
+                                'has_duplicates': has_duplicates,
+                                'quality_score': chain_quality,
+                                'hash_value': chain_hash_value
                             }
                         else:
                             self.logger.warning(f"Chain from {node} (length {length}) is invalid")
                     else:
-                        self.logger.debug(f"Chain from {node} (length {length}) not longer than current chain ({current_chain_length})")
+                        self.logger.debug(f"Chain from {node} (length {length}) significantly shorter than current chain ({current_chain_length})")
                 else:
                     self.logger.warning(f"Unexpected status code fetching chain from {node}: {response.status_code}")
             except json.JSONDecodeError as e:
@@ -726,64 +981,73 @@ class Node:
             except Exception as e:
                 self.logger.error(f"Error processing chain from {node}: {e}", exc_info=True)
         
-        # Select the longest valid chain with tie-breaking
+        # Select the best chain based on quality, length, and other factors
         if valid_chains:
-            # First, find the longest chain length
-            max_length = max(data['length'] for data in valid_chains.values())
-            
-            # Filter for chains of the max length only
-            chains_with_max_length = {
-                node: data for node, data in valid_chains.items() 
-                if data['length'] == max_length
+            # First, strongly prefer chains without duplicates
+            chains_without_duplicates = {
+                node: data for node, data in valid_chains.items()
+                if not data['has_duplicates']
             }
             
-            # If there's a tie for length, use the one with the lexicographically smaller hash as a tie-breaker
-            if len(chains_with_max_length) > 1:
-                self.logger.info(f"Found {len(chains_with_max_length)} chains with equal length {max_length}. Using hash tie-breaker.")
+            selected_chains = chains_without_duplicates if chains_without_duplicates else valid_chains
+            
+            if not chains_without_duplicates and any(data['has_duplicates'] for data in valid_chains.values()):
+                self.logger.warning("All available chains have story position duplicates. Quality may be compromised.")
+            
+            # Now select based on chain quality and length
+            best_chain = None
+            best_score = float('-inf')
+            best_hash_value = ""
+            best_node = None
+            
+            for node, data in selected_chains.items():
+                quality_score = data['quality_score']
+                hash_value = data['hash_value']
                 
-                # Sort by hash (lexicographically smaller hash wins)
-                sorted_chains = sorted(
-                    chains_with_max_length.items(),
-                    key=lambda x: x[1]['last_block'].hash
-                )
+                # Primary criteria: quality score
+                # Secondary criteria (tiebreaker): lexicographically smaller hash
+                if (quality_score > best_score) or (quality_score == best_score and hash_value < best_hash_value):
+                    best_score = quality_score
+                    best_hash_value = hash_value
+                    best_chain = data
+                    best_node = node
+            
+            if best_chain:
+                longest_blockchain = best_chain['blockchain']
+                longest_length = best_chain['length']
+                has_duplicates = best_chain['has_duplicates']
                 
-                longest_node, longest_chain_data = sorted_chains[0]
-                self.logger.info(f"Selected chain from {longest_node} with hash {longest_chain_data['last_block'].hash[:8]} as tie-breaker winner")
+                with self.lock:
+                    # Evaluate our current chain
+                    current_chain_quality, current_hash_value = self._evaluate_chain_quality(self.blockchain.chain)
+                    current_has_duplicates = self._check_for_position_duplicates(self.blockchain.chain)
+                    
+                    self.logger.info(f"Our chain: length={len(self.blockchain.chain)}, quality={current_chain_quality}, hash={current_hash_value}, duplicates={current_has_duplicates}")
+                    self.logger.info(f"Best chain: length={longest_length}, quality={best_score}, hash={best_hash_value}, duplicates={has_duplicates}")
+                    
+                    # Adopt the new chain if:
+                    # 1. It has a higher quality score, OR
+                    # 2. Same quality but better hash value tiebreaker
+                    if (best_score > current_chain_quality) or (best_score == current_chain_quality and best_hash_value < current_hash_value):
+                        old_chain_length = len(self.blockchain.chain)
+                        self.blockchain.chain = longest_blockchain.chain
+                        self.blockchain.difficulty = longest_blockchain.difficulty  # Update our difficulty too
+                        
+                        # Stop mining if we were mining (we're building on an outdated chain)
+                        if self.is_mining:
+                            self.logger.info("Stopping mining due to chain replacement")
+                            self.stop_mining()
+                        
+                        self.logger.info(f"Replaced local chain (length {old_chain_length}, quality {current_chain_quality}) with chain from {best_node} (length {longest_length}, quality {best_score})")
+                        # Save blockchain state after chain replacement
+                        self._save_blockchain_state(f"replaced_chain_{longest_length}")
+                        return True
+                    else:
+                        self.logger.info(f"Keeping our chain - it has higher quality ({current_chain_quality} vs {best_score}) or better hash value ({current_hash_value} vs {best_hash_value})")
             else:
-                # No tie, just take the first (only) one
-                longest_node, longest_chain_data = next(iter(chains_with_max_length.items()))
-            
-            longest_blockchain = longest_chain_data['blockchain']
-            longest_length = longest_chain_data['length']
-            
-            with self.lock:
-                # In case of equal length and different hash, and our hash is lexicographically smaller, keep our chain
-                if longest_length == len(self.blockchain.chain) and \
-                   longest_chain_data['last_block'].hash > self.blockchain.get_latest_block().hash:
-                    self.logger.info(f"Equal length chain but our hash is smaller. Keeping our chain.")
-                    return False
-                    
-                # Now do the replacement
-                current_chain_length = len(self.blockchain.chain)  # Re-check
-                if longest_length > current_chain_length or \
-                   (longest_length == current_chain_length and longest_chain_data['last_block'].hash < self.blockchain.get_latest_block().hash):
-                    old_chain_length = len(self.blockchain.chain)
-                    self.blockchain.chain = longest_blockchain.chain
-                    self.blockchain.difficulty = longest_blockchain.difficulty  # Update our difficulty too
-                    
-                    # Stop mining if we were mining (we're building on an outdated chain)
-                    if self.is_mining:
-                        self.logger.info("Stopping mining due to chain replacement")
-                        self.stop_mining()
-                    
-                    self.logger.info(f"Replaced local chain (length {old_chain_length}) with chain from {longest_node} (length {longest_length})")
-                    # Save blockchain state after chain replacement
-                    self._save_blockchain_state(f"replaced_chain_{longest_length}")
-                    return True
-                else:
-                    self.logger.info(f"Chain replacement not needed")
+                self.logger.info("No viable chains found from peers")
         else:
-            self.logger.info("No longer valid chains found from peers")
+            self.logger.info("No valid chains found from peers")
         
         self.logger.info(f"Conflict resolution finished. Current chain length: {len(self.blockchain.chain)}")
         return False

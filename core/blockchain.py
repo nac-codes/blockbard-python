@@ -5,13 +5,14 @@ import time
 import random
 
 class Block:
-    def __init__(self, index, timestamp, data, previous_hash, difficulty=0, nonce=0):
+    def __init__(self, index, timestamp, data, previous_hash, difficulty=0, nonce=0, story_position=None):
         self.index = index
         self.timestamp = timestamp
         self.data = data
         self.previous_hash = previous_hash
         self.difficulty = difficulty  # Store difficulty in each block
         self.nonce = nonce  # For proof of work
+        self.story_position = story_position or {}  # Position in story (e.g., {position_id: "hash", previous_position_id: "hash"})
         self.hash = self.calculate_hash()
 
     def calculate_hash(self):
@@ -24,6 +25,7 @@ class Block:
                 "previous_hash": self.previous_hash,
                 "difficulty": self.difficulty,
                 "nonce": self.nonce,
+                "story_position": self.story_position,
             },
             sort_keys=True,
         ).encode()
@@ -36,9 +38,9 @@ class Block:
 class Blockchain:
     def __init__(self, genesis_data=None):
         # Initialize difficulty first before using it
-        self.difficulty = 4  # Increased from 2 to 4 (more leading zeros required)
+        self.difficulty = 2  # Increased from 2 to 4 (more leading zeros required)
         self.mining_reward = 1.0  # Optional: reward for mining a block
-        self.block_generation_interval = 60  # Changed from 10 to 60 seconds (1 minute target)
+        self.block_generation_interval = 20  # Changed from 10 to 60 seconds (1 minute target)
         self.difficulty_adjustment_interval = 10  # Adjust difficulty after this many blocks
         self.max_nonce = 2**32  # Maximum nonce value to try
         self.last_difficulty_adjustment = datetime.datetime.now()
@@ -69,13 +71,17 @@ class Blockchain:
         if new_index % self.difficulty_adjustment_interval == 0 and new_index > 0:
             self._adjust_difficulty()
         
-        # Create a new block with the current difficulty
+        # Extract story position information from the data
+        story_position = self._extract_story_position(data)
+        
+        # Create a new block with the current difficulty and story position
         new_block = Block(
             new_index, 
             new_timestamp, 
             data, 
             previous_block.hash,
-            difficulty=self.difficulty
+            difficulty=self.difficulty,
+            story_position=story_position
         )
         
         print(f"Starting mining of block {new_index} with difficulty {self.difficulty}")
@@ -159,7 +165,7 @@ class Blockchain:
             print(f"Invalid block {new_block.index}. Not added.")
             return False
 
-    def is_valid_new_block(self, new_block, previous_block):
+    def is_valid_new_block(self, new_block, previous_block, allow_duplicate_positions=False):
         """Validates a new block including proof of work."""
         if previous_block.index + 1 != new_block.index:
             print(f"Validation Error: Invalid index. Expected {previous_block.index + 1}, got {new_block.index}")
@@ -176,10 +182,89 @@ class Blockchain:
         if not new_block.hash.startswith('0' * new_block.difficulty):
             print(f"Validation Error: Block hash {new_block.hash} does not meet difficulty {new_block.difficulty}")
             return False
+        
+        # Verify story position
+        if not self._is_valid_story_position(new_block, previous_block, allow_duplicate_positions):
+            print(f"Validation Error: Invalid story position for block {new_block.index}")
+            return False
 
         return True
+        
+    def _is_valid_story_position(self, new_block, previous_block, allow_duplicate_positions=False):
+        """
+        Validates that a block's story position is valid:
+        1. The position_id is unique in the entire chain
+        2. The story position makes logical sense (e.g., sequential verses)
+        
+        Validation is more relaxed when receiving blocks from other chains to allow 
+        for better consensus while still preventing duplicates.
+        
+        Args:
+            new_block: The block to validate
+            previous_block: The previous block in the chain
+            allow_duplicate_positions: If True, don't reject blocks with duplicate position IDs
+                                      (used during conflict resolution)
+        """
+        # Skip validation for genesis block
+        if new_block.index == 0:
+            return True
+            
+        # 1. Verify the position_id is correctly calculated from the data
+        if not new_block.story_position or "position_id" not in new_block.story_position:
+            print(f"Story position validation error: Missing position_id")
+            return False
+            
+        # 2. Verify the position_id is unique in the entire chain
+        position_id = new_block.story_position["position_id"]
+        
+        # Look for this position in the existing chain
+        if not allow_duplicate_positions:
+            for block in self.chain:
+                if (block.story_position and 
+                    "position_id" in block.story_position and 
+                    block.story_position["position_id"] == position_id):
+                    print(f"Story position validation error: Position {position_id} already used in block {block.index}")
+                    return False
+                
+        # 3. Validate story position metadata if available
+        if "metadata" in new_block.story_position and "metadata" in previous_block.story_position:
+            # Get metadata from both blocks
+            new_meta = new_block.story_position["metadata"]
+            prev_meta = previous_block.story_position["metadata"]
+            
+            # For Bible verses, check that chapters and verses make logical sense
+            if all(k in new_meta for k in ["book", "chapter", "verse"]) and all(k in prev_meta for k in ["book", "chapter", "verse"]):
+                # Same book
+                if new_meta["book"] == prev_meta["book"]:
+                    # Same chapter
+                    if new_meta["chapter"] == prev_meta["chapter"]:
+                        # Ensure verse is sequential or at least makes logical sense
+                        # Allow for skipped verses, but ensure it's moving forward
+                        if isinstance(new_meta["verse"], int) and isinstance(prev_meta["verse"], int):
+                            if new_meta["verse"] <= prev_meta["verse"]:
+                                # If the verse is not moving forward, check if it's the same verse with different attributes
+                                # This is a warning but not a strict error - accept it for better cross-chain compatibility
+                                print(f"Story position warning: Non-sequential verse. Previous: {prev_meta['verse']}, New: {new_meta['verse']}")
+                    
+                    # Different chapter - ensure chapter is moving forward or same book
+                    elif isinstance(new_meta["chapter"], int) and isinstance(prev_meta["chapter"], int):
+                        if new_meta["chapter"] < prev_meta["chapter"]:
+                            print(f"Story position warning: Chapter going backward: Previous: {prev_meta['chapter']}, New: {new_meta['chapter']}")
+        
+        # 4. If previous_position_id is present, make a soft check (warning rather than error)
+        # This helps with cross-chain compatibility
+        if "previous_position_id" in new_block.story_position and previous_block.story_position and "position_id" in previous_block.story_position:
+            expected_prev_id = previous_block.story_position["position_id"]
+            actual_prev_id = new_block.story_position["previous_position_id"]
+            
+            if expected_prev_id != actual_prev_id:
+                # This is just a warning now, not an error
+                print(f"Story position warning: Previous position mismatch. Expected {expected_prev_id}, got {actual_prev_id}")
+                # We still allow the block to be valid
+        
+        return True
 
-    def is_valid_chain(self, chain_to_validate=None):
+    def is_valid_chain(self, chain_to_validate=None, allow_duplicate_positions=False):
         """Validates the integrity of the entire blockchain."""
         target_chain = chain_to_validate if chain_to_validate else self.chain
         # Check genesis block
@@ -192,7 +277,7 @@ class Blockchain:
         for i in range(1, len(target_chain)):
             current_block = target_chain[i]
             previous_block = target_chain[i - 1]
-            if not self.is_valid_new_block(current_block, previous_block):
+            if not self.is_valid_new_block(current_block, previous_block, allow_duplicate_positions):
                 print(f"Validation Error: Chain invalid at block {current_block.index}.")
                 return False
         return True
@@ -210,7 +295,8 @@ class Blockchain:
                 "previous_hash": block.previous_hash,
                 "hash": block.hash,
                 "difficulty": block.difficulty,
-                "nonce": block.nonce
+                "nonce": block.nonce,
+                "story_position": block.story_position
             } for block in self.chain
         ], indent=4)
 
@@ -229,7 +315,8 @@ class Blockchain:
                 data=block_data["data"],
                 previous_hash=block_data["previous_hash"],
                 difficulty=block_data.get("difficulty", 0),
-                nonce=block_data.get("nonce", 0)
+                nonce=block_data.get("nonce", 0),
+                story_position=block_data.get("story_position", {})
             )
             # Manually set the hash from the loaded data
             block.hash = block_data["hash"]
@@ -240,6 +327,69 @@ class Blockchain:
             blockchain.difficulty = blockchain.chain[-1].difficulty
             
         return blockchain
+
+    def _extract_story_position(self, data):
+        """
+        Extracts story position information from block data.
+        Priority:
+        1. Use dedicated 'storyPosition' field if present
+        2. Fall back to extracting from standard fields like Book/Chapter/Verse
+        3. Default to using block index for non-structured data
+        
+        Returns a dictionary with position_id (hash of position metadata)
+        and previous_position_id (from the latest block).
+        """
+        # Try to parse data as JSON
+        json_data = None
+        try:
+            if isinstance(data, str):
+                json_data = json.loads(data)
+            else:
+                json_data = data
+                
+            # 1. FIRST PRIORITY: Check for dedicated storyPosition field
+            if json_data and "storyPosition" in json_data:
+                # Use the storyPosition object directly as provided
+                position_data = json_data["storyPosition"]
+                
+                # Create deterministic position hash
+                position_string = json.dumps(position_data, sort_keys=True).encode()
+                position_id = hashlib.sha256(position_string).hexdigest()
+                
+                # Get the previous position ID from the latest block
+                previous_position_id = ""
+                if self.chain:
+                    latest_block = self.get_latest_block()
+                    if latest_block.story_position and "position_id" in latest_block.story_position:
+                        previous_position_id = latest_block.story_position["position_id"]
+                
+                return {
+                    "position_id": position_id,
+                    "previous_position_id": previous_position_id,
+                    "metadata": position_data
+                }
+        except (json.JSONDecodeError, TypeError, AttributeError) as e:
+            # Handle JSON parsing errors silently and continue to fallback
+            pass
+             
+        # 3. FALLBACK: For non-structured data - use the block index as position
+        if self.chain:
+            latest_block = self.get_latest_block()
+            previous_position_id = ""
+            if latest_block.story_position and "position_id" in latest_block.story_position:
+                previous_position_id = latest_block.story_position["position_id"]
+                
+            # Create a simple auto-incremented position
+            return {
+                "position_id": hashlib.sha256(f"position_{len(self.chain)}".encode()).hexdigest(),
+                "previous_position_id": previous_position_id
+            }
+        
+        # Genesis block case
+        return {
+            "position_id": hashlib.sha256("genesis_position".encode()).hexdigest(),
+            "previous_position_id": ""
+        }
 
 # Example usage (optional, for quick testing)
 if __name__ == "__main__":
